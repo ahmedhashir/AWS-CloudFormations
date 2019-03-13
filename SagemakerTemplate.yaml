@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+              This Cloudformation template creates a Sagemaker Notebook Instance in Private Subnet.
+              It also creates Sagemaker VOC Endpoints and Sagemaker Execution IAM Role to be assumed
+              by Notebook Instance.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Network
+        Parameters:
+          - NetworkStackName
+        Label:
+          default: "Notebook configuration"
+        Parameters:
+          - InstanceType
+    ParameterLabels:
+      NetworkStackName:
+        default: "Name of network stack"
+Parameters:
+  NetworkStackName:
+    Description: Name of Network Stack that will contain a Private Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+  NotebookInstanceName:
+    Description: Name of Sagemaker notebook
+    Type: String
+    Default: HashSagemakerNotebook
+  InstanceType:
+    Description: "Instance Type of Machine Learning Notebook"
+    Type: String
+    Default: "ml.t2.large"
+Resources:
+  SagemakerInterfaceEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: "Interface"
+      SecurityGroupIds:
+        - !Ref NotebookSecurityGroup
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
+      ServiceName:
+        !Join [ "", [ "aws.sagemaker.", !Ref "AWS::Region", ".notebook" ] ]
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      PrivateDnsEnabled: True
+  SagemakerAPIEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: "Interface"
+      SecurityGroupIds:
+        - !Ref NotebookSecurityGroup
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
+      ServiceName:
+        !Join [ "", [ "com.amazonaws.", !Ref "AWS::Region", ".sagemaker.api" ] ]
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      PrivateDnsEnabled: True
+  SagemakerRuntimeEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: "Interface"
+      SecurityGroupIds:
+        - !Ref NotebookSecurityGroup
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
+      ServiceName:
+        !Join [ "", [ "com.amazonaws.", !Ref "AWS::Region", ".sagemaker.runtime" ] ]
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      PrivateDnsEnabled: True
+  NotebookSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: "Security Group for Sagemaker notebooks"
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-NotebookSecurityGroup"
+      GroupDescription: "Security Group for Sagemaker Notebook"
+      VpcId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          SourceSecurityGroupId: 
+            Fn::ImportValue: !Sub "${NetworkStackName}-BastionSecurityGroup"
+      SecurityGroupEgress:
+        -
+          IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-SagemakerNotebookSecurityGroup"
+  NotebookSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NotebookSecurityGroup
+      IpProtocol: tcp
+      FromPort: '0'
+      ToPort: '65535'
+      SourceSecurityGroupId: !Ref NotebookSecurityGroup
+  NotebookInstance:
+    Type: AWS::SageMaker::NotebookInstance
+    Properties:
+      NotebookInstanceName: !Ref NotebookInstanceName
+      InstanceType: !Ref InstanceType
+      SecurityGroupIds: 
+        - !GetAtt NotebookSecurityGroup.GroupId
+      RoleArn: !GetAtt SagemakerExecutionRole.Arn
+      SubnetId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
+      DirectInternetAccess: "Disabled"
+      Tags:
+        - Key: Name
+          Value: !Ref NotebookInstanceName
+  SagemakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "sagemaker.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      RoleName: !Join [ "-", [ "Sagemaker", !Ref "AWS::Region", "SagemakerExecutionRole" ] ]
+  SagemakerExecutionRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SagemakerExecutionRole
+      InstanceProfileName: !Ref SagemakerExecutionRole
+  # SagemakerEnableNotebookAccessPolicy:
+  #   Type: AWS::IAM::Role
+  #   Properties:
+  #     RoleName: !Join [ "-", [ "Sagemaker", !Ref "AWS::Region", "SagemakerEnableNotebookAccessRole" ] ]
+  #     AssumeRolePolicyDocument:
+  #       Version: "2012-10-17"
+  #       Statement:
+  #         -
+  #           Effect: "Allow"
+  #           Action:
+  #             - "sagemaker:CreatePresignedNotebookInstanceUrl"
+  #             - "sagemaker:DescribeNotebookInstance"
+  #           Resource: "*"
+  #           Condition:
+  #             StringEquals:
+  #               aws:SourceVpc:
+  #                 Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+Outputs:
+  NotebookInstanceId:
+    Value: !Ref NotebookInstance

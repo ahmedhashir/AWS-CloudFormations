@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: 2010-09-09
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Network
+        Parameters:
+          - NetworkStackName
+      -
+        Label:
+          default: Cluster Configuration
+        Parameters:
+          - ClusterName
+          - ReleaseLabel
+          - KeyPair
+          - Applications
+          - LogUri
+      - 
+        Label:
+          default: "Node configuration"
+        Parameters:
+          - InstanceType
+          - CoreNodes
+          - TaskNodes
+          - BidPriceAsPercentageOfOnDemandPrice
+    ParameterLabels:
+      NetworkStackName:
+        default: "Name of network stack"
+      ClusterName:
+        default: "EMR cluster name"
+      ReleaseLabel:
+        default: "EMR Release"
+      KeyPair:
+        default: "Key Pair"
+      LogUri:
+        default: "S3 bucket"
+      CoreNodes:
+        default: "No. of core Nodes"
+      TaskNodes: 
+        default: "No. of task Nodes"
+      BidPriceAsPercentageOfOnDemandPrice:
+        default: "Bid price %"
+      InstanceType:
+        default: "Instance Type"
+Parameters:
+  ClusterName:
+    Description: "Name of the EMR cluster"
+    Type: String
+    Default: "Hash-EMR-Cluster"
+  ReleaseLabel: 
+    Description: "EMR Release version"
+    Type: String
+    Default: "emr-5.20.0"
+  Applications:
+    Description: "Applications"
+    Type: CommaDelimitedList
+    Default: "Spark, Livy"
+  LogUri: 
+    Description: "S3 bucket for EMR logs"
+    Type: String
+    Default: "s3://hash-toronto/Logs/EMR/"
+  NetworkStackName:
+    Description: Name of Network Stack that will contain a Public Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+  KeyPair:
+    Description: "Key Pair for EC2 instances"
+    Type: AWS::EC2::KeyPair::KeyName
+  CoreNodes:
+    Description: "Number of Core nodes"
+    Type: Number
+    Default: 0
+  TaskNodes:
+    Description: "Number of task nodes"
+    Type: Number
+    Default: 0  
+  InstanceType:
+    Description: "Instance Type of Core Node"
+    Type: String
+    Default: "m3.xlarge"
+  BidPriceAsPercentageOfOnDemandPrice:
+    Description: "The bid price, as a percentage of the On-Demand price"
+    Type: Number
+    Default: 50
+  RunTestStep:
+    Description: "Run a test upon cluster statup"
+    Type: String
+    Default: "Yes"
+    AllowedValues: [ "Yes", "No" ]
+Conditions:
+  CreateCoreNodes: !Not [ !Equals [ !Ref CoreNodes, "0" ] ]
+  CreateTaskNodes: !Not [ !Equals [ !Ref TaskNodes, "0" ] ]
+  RunTestStep: !Equals [ !Ref RunTestStep, "Yes" ]
+Resources:
+  EmrMasterNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Description: "Security Group for EMR Master Node"
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
+      GroupDescription: "Security Group for EMR Master Node"
+      VpcId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: '8443'
+          ToPort: '8443'
+          SourceSecurityGroupId: !Ref EmrServiceAccessSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
+  EmrMasterNodeSGSSHAccess:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
+      GroupDescription: "Security Group to allow SSH into Master node from bastion host"
+      VpcId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: 
+            Fn::ImportValue:
+              !Sub "${NetworkStackName}-BastionSecurityGroup"       
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
+  EmrSlaveNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Description: "Security Group for EMR Slave Node"
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"
+      GroupDescription: "Security Group for EMR Slave Node"
+      VpcId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: '8443'
+          ToPort: '8443'
+          SourceSecurityGroupId: !Ref EmrServiceAccessSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"
+  EmrServiceAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Description: "Security Group for EMR Service Access"
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-EmrServiceAccessSecurityGroup"
+      GroupDescription: "Security Group for EMR Service Access"
+      VpcId: 
+        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EmrServiceAccessSecurityGroup"
+  EmrServiceRoleEgressMaster:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EmrServiceAccessSecurityGroup
+      IpProtocol: tcp
+      FromPort: '8443'
+      ToPort: '8443'
+      SourceSecurityGroupId: !Ref EmrMasterNodeSecurityGroup
+  EmrServiceAccessSGEgressSlave:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EmrServiceAccessSecurityGroup
+      IpProtocol: tcp
+      FromPort: '8443'
+      ToPort: '8443'
+      SourceSecurityGroupId: !Ref EmrSlaveNodeSecurityGroup
+  EMRRoleForEc2:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      RoleName: !Join [ "-", [ "EMR-EC2", !Ref "AWS::Region", !Ref ClusterName ] ]
+  EmrEc2RoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EMRRoleForEc2
+      InstanceProfileName: !Ref EMRRoleForEc2
+  EMRServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "elasticmapreduce.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+        - arn:aws:iam::aws:policy/AmazonElasticMapReduceReadOnlyAccess
+      RoleName: !Join [ "-", [ "EMR-Service", !Ref "AWS::Region", !Ref ClusterName ] ]
+  EmrServiceRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EMRServiceRole
+      InstanceProfileName: !Ref EMRServiceRole
+  EMRCluster:
+    Type: AWS::EMR::Cluster
+    DependsOn: 
+      - EmrEc2RoleInstanceProfile
+      - EmrServiceRoleInstanceProfile
+    Properties:
+      Instances:
+        MasterInstanceFleet:
+          Name: "Master Nodes Instance Fleet"
+          TargetSpotCapacity: 1
+          InstanceTypeConfigs:
+            -
+              InstanceType: !Ref InstanceType
+              BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
+        CoreInstanceFleet:
+          Name: "Core Nodes Instance Fleet"
+          TargetSpotCapacity: !Ref CoreNodes
+          InstanceTypeConfigs:
+            -
+              InstanceType: !Ref InstanceType
+              BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
+        Ec2SubnetId: 
+          Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
+        EmrManagedMasterSecurityGroup: !Ref EmrMasterNodeSecurityGroup
+        EmrManagedSlaveSecurityGroup: !Ref EmrSlaveNodeSecurityGroup
+        ServiceAccessSecurityGroup: !Ref EmrServiceAccessSecurityGroup
+        AdditionalMasterSecurityGroups: 
+          - !Ref EmrMasterNodeSGSSHAccess
+        Ec2KeyName: !Ref KeyPair 
+      JobFlowRole: !Ref EMRRoleForEc2
+      ServiceRole: !Ref EMRServiceRole
+      Name: !Ref ClusterName
+      LogUri: !Ref LogUri
+      ReleaseLabel: !Ref ReleaseLabel
+      Applications: 
+        - Name: !Select [ 0, !Ref Applications ]
+        - Name: !Select [ 1, !Ref Applications ]
+      Tags:
+        -
+          Key: "Name"
+          Value: !Join [ "-", [ "HashEMR", !Ref "AWS::Region" ] ]
+  TaskInstanceFleet:
+    Type: AWS::EMR::InstanceFleetConfig
+    Condition: CreateTaskNodes
+    Properties:
+      Name: "Task Instances - Spot"
+      ClusterId: !Ref EMRCluster
+      InstanceFleetType: "TASK"
+      TargetSpotCapacity: !Ref TaskNodes
+      InstanceTypeConfigs:
+        -
+          InstanceType: !Ref InstanceType
+          BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
+  TestStep:
+    Type: AWS::EMR::Step
+    Condition: RunTestStep
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "5"
+          - "10"
+        Jar: "s3://emr-cfn-test/hadoop-mapreduce-examples-2.6.0.jar"
+        MainClass: "pi"
+      Name: "TestStep"
+      JobFlowId: !Ref EMRCluster
+Outputs:
+  MasterNodeDNS:
+    Description: "DNS for EMR Master Node"
+    Value: !GetAtt EMRCluster.MasterPublicDNS
+    Export:
+      Name: !Sub "${AWS::StackName}-MasterNodePublicDNS"
+  ClusterId:
+    Description: "Cluster ID"
+    Value: !Ref EMRCluster
+    Export: 
+      Name: !Sub "${AWS::StackName}-ClusterId"
+  EmrMasterNodeSecurityGroup:
+    Description: "Security Group of EMR Master Node"
+    Value: !Ref EmrMasterNodeSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
+  EmrSlaveNodeSecurityGroup:
+    Description: "Security Group of EMR Master Node"
+    Value: !Ref EmrSlaveNodeSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"

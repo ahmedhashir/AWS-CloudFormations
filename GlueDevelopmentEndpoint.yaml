@@ -1,0 +1,118 @@
+Description: >
+              This Cloudformation template creates a Glue Development Endpoint in Private subnet.
+              The Dev Endpoint can be accessed through Bastion host(s).
+Mappings:
+  Region:
+    ca-central-1:
+      PublicKey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCKD7zThZ15c/PFjtVFLlexy9ew2j7s4pw8Fk506T9fe6NZHOL1tEbTukZJRSpZhEMrmx2qaDSVUCZ+RzGNik2ieBVXRjnp/r0SsrPvVdhqgl0EYORoTEmxmJxfjlqoLK0EfvCVwT3JdPssztXytDmuyMedb1+24JKviA8rdCahrIGLSUtpllxzuEFsiYQFcpwh4dNG7xL1Fcb4Uf/6GuD/Qo/WADrKMPEnw0Dd2uTT8uNB12yVTJlspTtQbBzRzyyYMWY3HQtwICGCWi6RddfaLkTjn8s+f+ck1Wol3UepY51rZtqD+tsrt9c60igJnArW8G6vqy67P8yyzcfTQ4Yl imported-openssh-key"
+    us-west-1:
+      PublicKey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsg4hQIARabLvGeRWY01y03d/QNkaZ4NFsU0kjDxoWRUkzwKsSeGSG2QzpINfnFkc0mbPIE7PSK4TGAwST3kHhyf8vCvaHmkyyk1kEwi2VF07XTNXATe8fFdSPllH029ivJLHohMMLpL4YOE+yMGA2AHwBuIGurEaEd13/l2DAobJRilCkJtZL2T7P/3wzcT7oGUJY9dJ7qA5YMEfHsCkZsKT+UvW6shwLehSldc39JW+E+iTJhwZZn5twN0LothR9o5N1iADcn/e6hM55rWBSoUqLG01o+TRO+T2YQWKOLcBz/DRX5kbDxTtIPvpgYsrw5IUNRfM5BoVvk34NIgQ3 imported-openssh-key"
+    us-west-2: 
+      PublicKey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCLAa+BSw/Lu3xHHDKNllpQJWSHwxQN1SKCJHBojgeBhK7u6wwdRPbLAi5X87SqkyxBZ6nJRTl8j4trDLfENrjIHVxd22d6qDGqZQqsmFnxk7lnfjFxz0PDYQxhV9EGAiSt1WqTeamZVkikJnmd4bzSIqUhkqrcccqHG2XBJ+E9dqPoTZCsKnO7hFqvtFHTRRVVS6AVwY8BeY3mBaqsZjTI4ciKeGmWh25e2iWD9dJX6ycIf/pICUeRHarM7R+AAViDPN9ARQDXh012W2yaoy+4p9BhwCh7LOmbFJMXjS46UITceQKS+ZFpcau86HaEFs3TwkLwBZJhTNoxU6D8c6ot imported-openssh-key"
+Parameters:
+  EndpointName: 
+    Description: "Name of Glue Development Endpoint"
+    Type: String
+    Default: "HashGlueDevelopmentEndpoint"
+  NumberOfNode:
+    Description: "The number of DPUs to be used for this endpoint"
+    Type: Number
+    Default: 2
+  NetworkStackName:
+    Description: Name of Network Stack that will contain a Public Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+Resources:
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: "Security Group for Glue Development Endpoint only!"
+    Properties:
+      GroupDescription: Enable SSH access via port 22 and self-reference 
+      VpcId: 
+        Fn::ImportValue:
+          !Sub "${NetworkStackName}-VPCID"
+      SecurityGroupIngress:
+        -
+          Description: "Allow SSH from Bastion Host"
+          IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: 
+            Fn::ImportValue:
+              !Sub "${NetworkStackName}-BastionSecurityGroup"
+        -
+          Description: "Allow Port forwarding for Livy (Sagemaker Notebook)"
+          IpProtocol: tcp
+          FromPort: 8998
+          ToPort: 8998
+          SourceSecurityGroupId: 
+            Fn::ImportValue:
+              !Sub "${NetworkStackName}-BastionSecurityGroup"
+        -
+          Description: "Allow Port forwarding for Zeppelin Notebook"
+          IpProtocol: tcp
+          FromPort: 9007
+          ToPort: 9007
+          SourceSecurityGroupId: 
+            Fn::ImportValue:
+              !Sub "${NetworkStackName}-BastionSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-GlueEndpointSecurityGroup"
+  EndpointSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: EndpointSecurityGroup
+    Properties:
+      GroupId: !Ref EndpointSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref EndpointSecurityGroup
+  AWSGlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "glue.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      RoleName: !Join [ "-" , ["AWSGlueServiceRole", !Ref "AWS::Region",!Ref EndpointName ] ]
+  AWSGlueServiceInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AWSGlueServiceRole
+      InstanceProfileName: !Ref AWSGlueServiceRole
+  GlueDevelopmentEndpoint:
+    Type: AWS::Glue::DevEndpoint
+    Properties:
+      EndpointName: !Ref EndpointName
+      NumberOfNodes: !Ref NumberOfNode
+      PublicKey: 
+        Fn::FindInMap:
+          - Region
+          - !Ref AWS::Region
+          - PublicKey 
+      RoleArn: !GetAtt AWSGlueServiceRole.Arn
+      SecurityGroupIds: 
+        - !Ref EndpointSecurityGroup
+      SubnetId: 
+                Fn::ImportValue:
+                  !Sub "${NetworkStackName}-PrivateSubnetId"
+Outputs:
+  GlueDevelopmentEndpoint:
+    Description: "Glue Development Endpoint"
+    Value: !Ref GlueDevelopmentEndpoint
+    Export: 
+      Name: !Sub "${AWS::StackName}-GlueDevelopmentEndpoint"
