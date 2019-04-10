@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create a KMS Key.
+Parameters:
+  KMSAlias:
+    Description: "Alias for KMS Key"
+    Type: String
+    Default: "Hash"
+Resources:
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "Hash KMS Key"
+      Enabled: True
+      EnableKeyRotation: True
+      KeyUsage: "ENCRYPT_DECRYPT"
+      PendingWindowInDays: 7
+      Tags:
+        - Key: "Key"
+          Value: "Value"
+      KeyPolicy: 
+        Version: "2012-10-17"
+        Id: "Hash-Default-Key"
+        Statement: 
+          - 
+            Sid: "Allow administration of the key"
+            Effect: "Allow"
+            Principal: "*"
+            Action: 
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: "*"
+          - 
+            Sid: "Allow use of the key"
+            Effect: "Allow"
+            Principal: "*"
+            Action: 
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+  KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Join [ "/" , [ "alias" , !Ref KMSAlias ] ]
+      TargetKeyId: !Ref KMSKey 
+
+Outputs:
+  KMSKeyARN:
+    Description: "KMS Key ARN"
+    Value: !GetAtt KMSKey.Arn
+    Export: 
+      Name: !Sub "${AWS::StackName}-KMSKey"
+  KMSKeyAliasARN:
+    Description: "KMS Key Alias ARN"
+    Value: !Ref KeyAlias
+    Export: 
+      Name: !Sub "${AWS::StackName}-KeyAlias"
