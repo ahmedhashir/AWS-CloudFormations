@@ -1,7 +1,7 @@
 # AWS-CloudFormations
 The following AWS CloudFormation templates can be used for provisioning AWS Big Data, IoT and ML resources.
 
-# KMSKeyTemplate.yaml:
+## KMSKeyTemplate.yaml:
 Use this template for provisioning KMSKeys. 
 
 # S3BucketTemplate.yaml
