@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create a S3 Bcuket.
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Bucket Configuration
+        Parameters:
+          - BucketName
+          - DeleteDataDays
+      -
+        Label:
+          default: Encryption
+        Parameters:
+          - KMSStackName
+
+Parameters:
+
+  BucketName:
+    Description: "S3 Bucket Name"
+    Type: String
+    Default: ""
+
+  DeleteDataDays:
+    Description: "Delete Data Rule Days"
+    Type: Number
+    Default: 1
+
+  KMSStackName:
+    Description: Name of KMS Stack that created a KMS Key
+    Type: String
+    Default: HashKMSStack
+
+Conditions:
+
+  BucketNameSpecified: !Not [ !Equals [ "" , !Ref BucketName ] ]
+  KMSKeySpecified: !Not [ !Equals [ "" , !Ref KMSStackName ] ]
+
+Resources:
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: "Delete"
+    Properties:
+      # AccelerateConfiguration:
+      #   AccelerateConfiguration
+      # AccessControl: String
+      # AnalyticsConfigurations:
+      #   - AnalyticsConfiguration
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          -
+            ServerSideEncryptionByDefault:
+              !If
+                - KMSKeySpecified
+                -
+                  KMSMasterKeyID:
+                    Fn::ImportValue: !Sub "${KMSStackName}-KMSKey"
+                  SSEAlgorithm: "aws:kms"
+                - SSEAlgorithm: "AES256"
+      BucketName:
+        !If
+          - BucketNameSpecified
+          - !Ref BucketName
+          - !Ref "AWS::NoValue"
+      # CorsConfiguration:
+      #   CorsConfiguration
+      # InventoryConfigurations:
+      #   - InventoryConfiguration
+      LifecycleConfiguration:
+        Rules:
+          -
+            Id: "DeleteDataRule"
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: !Ref DeleteDataDays
+            ExpirationInDays: !Ref DeleteDataDays
+            NoncurrentVersionExpirationInDays: !Ref DeleteDataDays
+            Prefix: "*"
+            Status: "Enabled"
+      # LoggingConfiguration:
+      #   LoggingConfiguration
+      # MetricsConfigurations:
+      #   - MetricsConfiguration
+      # NotificationConfiguration:
+      #   NotificationConfiguration
+      # ObjectLockConfiguration:
+      #   ObjectLockConfiguration
+      # ObjectLockEnabled: Boolean
+      # PublicAccessBlockConfiguration:
+      #   PublicAccessBlockConfiguration
+      # ReplicationConfiguration:
+      #   ReplicationConfiguration
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+      # VersioningConfiguration:
+      #   VersioningConfiguration
+      # WebsiteConfiguration:
+      #   WebsiteConfiguration
+
+  S3ReadWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to read & write objects from S3 Bucket: ${S3Bucket}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${S3Bucket}-${AWS::Region}-read-write-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "S3ReadWrite"
+            Effect: "Allow"
+            Action:
+              - "s3:AbortMultipartUpload"
+              - "s3:GetBucketLocation"
+              - "s3:GetObject"
+              - "s3:ListBucket"
+              - "s3:ListBucketMultipartUploads"
+              - "s3:PutObject"
+              - "s3:DeleteObject"
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub "${S3Bucket.Arn}/*"
+      # Roles:
+      #   - String
+      # Users:
+      #   - String
+
+  S3WritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to write objects to S3 Bucket: ${S3Bucket}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${S3Bucket}-${AWS::Region}-write-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "S3Write"
+            Effect: "Allow"
+            Action:
+              - "s3:AbortMultipartUpload"
+              - "s3:GetBucketLocation"
+              - "s3:ListBucket"
+              - "s3:ListBucketMultipartUploads"
+              - "s3:PutObject"
+              - "s3:DeleteObject"
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub "${S3Bucket.Arn}/*"
+      # Roles:
+      #   - String
+      # Users:
+      #   - String
+
+  S3ReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to read S3 Bucket: ${S3Bucket}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${S3Bucket}-${AWS::Region}-read-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "S3Read"
+            Effect: "Allow"
+            Action:
+              - "s3:GetBucketLocation"
+              - "s3:GetObject"
+              - "s3:ListBucket"
+              - "s3:ListBucketMultipartUploads"
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub "${S3Bucket.Arn}/*"
+      # Roles:
+      #   - String
+      # Users:
+      #   - String
+
+Outputs:
+  S3BucketName:
+    Description: "S3 Bucket"
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-S3BucketName"
+  S3BucketARN:
+    Description: "S3 Bucket ARN"
+    Value: !GetAtt S3Bucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-S3BucketArn"
+  S3ReadWritePolicy:
+    Description: "IAM Policy for usage of S3 Bucket"
+    Value: !Ref S3ReadWritePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-S3ReadWritePolicy"
+  S3ReadPolicy:
+    Description: "IAM Policy for read objects of S3 Bucket"
+    Value: !Ref S3ReadPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-S3ReadPolicy"
+  S3WritePolicy:
+    Description: "IAM Policy for write objects to S3 Bucket"
+    Value: !Ref S3WritePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-S3WritePolicy"

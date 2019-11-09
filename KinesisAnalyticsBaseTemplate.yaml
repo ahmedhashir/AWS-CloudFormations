@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+              This Cloudformation template creates an IAM Role for Kinesis Analytics Application.
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Reference Stacks
+        Parameters:
+          - KinesisStreamStack
+          - FirehoseStack
+          - S3Stack
+
+Parameters:
+
+  KinesisStreamStack:
+    Description: Name of Kinesis Stream Stack
+    Type: String
+    Default: HashKinesisStack
+
+  FirehoseStack:
+    Description: Name of Kinesis Firehose Stack
+    Type: String
+    Default: HashFirehoseStack
+
+  S3Stack:
+    Description: Name of S3 Stack
+    Type: String
+    Default: HashS3Stack
+
+  # KMSStack:
+  #   Description: Name of KMS Stack that exports a KMS key
+  #   Type: String
+  #   Default: HashKMSStack
+
+Conditions:
+
+  KinesisStreamSpecified: !Not [ !Equals [ "" , !Ref KinesisStreamStack ] ]
+  FirehoseStackSpecified: !Not [ !Equals [ "" , !Ref FirehoseStack ] ]
+  S3StackSpecified: !Not [ !Equals [ "" , !Ref S3Stack ] ]
+
+Resources:
+
+  KinesisAnalyticsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "kinesisanalytics.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        -
+          !If
+            - KinesisStreamSpecified
+            - Fn::ImportValue: !Sub "${KinesisStreamStack}-KinesisReadPolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - KinesisStreamSpecified
+            - Fn::ImportValue: !Sub "${KinesisStreamStack}-KinesisWritePolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - FirehoseStackSpecified
+            - Fn::ImportValue: !Sub "${FirehoseStack}-FirehoseReadPolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - FirehoseStackSpecified
+            - Fn::ImportValue: !Sub "${FirehoseStack}-FirehoseWritePolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - S3StackSpecified
+            - Fn::ImportValue: !Sub "${S3Stack}-S3ReadWritePolicy"
+            - !Ref "AWS::NoValue"
+      RoleName: !Join [ "-", [ "HashKinesisAnalyticsExecutionRole", !Ref "AWS::Region" ] ]
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"

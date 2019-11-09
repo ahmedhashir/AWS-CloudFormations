@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create a Kinesis Stream.
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Stream Configuration
+        Parameters:
+          - StreamName
+          - ShardCount
+          - RetentionPeriod
+      -
+        Label:
+          default: Encryption
+        Parameters:
+          - KMSStackName
+
+Parameters:
+
+  StreamName:
+    Description: "Name of Kinesis Stream"
+    Type: "String"
+    Default: "HashStream"
+
+  ShardCount:
+    Description: "Number of Shards"
+    Type: Number
+    Default: 1
+
+  RetentionPeriod:
+    Description: "Retention Period in Hrs"
+    Type: Number
+    Default: 24
+
+  KMSStackName:
+    Description: Name of KMS Stack that created a KMS Key
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashKMSStack
+
+Resources:
+
+  KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Ref StreamName
+      RetentionPeriodHours: !Ref RetentionPeriod
+      ShardCount: !Ref ShardCount
+      StreamEncryption:
+        EncryptionType: "KMS"
+        KeyId:
+          Fn::ImportValue: !Sub "${KMSStackName}-KeyAlias"
+      Tags:
+        -
+          Key: Name
+          Value: !Ref StreamName
+
+  # KinesisDataStreamVPCEndPoint:
+  #   Type: AWS::EC2::VPCEndpoint
+  #   Properties:
+  #     VpcEndpointType: "Interface"
+  #     SecurityGroupIds:
+  #       - !Ref NotebookSecurityGroup
+  #     SubnetIds:
+  #       - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet1Id"
+  #       - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnet2Id"
+  #     ServiceName:
+  #       !Join [ ".", [ "com.amazonaws", !Ref "AWS::Region", "kinesis-streams" ] ]
+  #     VpcId:
+  #       Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+  #     PrivateDnsEnabled: True
+
+  KinesisReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to read records from Kinesis Data Stream: ${KinesisStream}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${KinesisStream}-${AWS::Region}-read-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "kinesis:ListShards"
+              - "kinesis:DescribeStream"
+              - "kinesis:GetRecords"
+              - "kinesis:GetShardIterator"
+            Resource:
+              - !GetAtt KinesisStream.Arn
+
+  KinesisWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to write records to Kinesis Data Stream: ${KinesisStream}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${KinesisStream}-${AWS::Region}-write-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "kinesis:ListShards"
+              - "kinesis:DescribeStream"
+              - "kinesis:PutRecord"
+              - "kinesis:PutRecords"
+            Resource:
+              - !GetAtt KinesisStream.Arn
+
+Outputs:
+
+  Stream:
+    Description: "Kenesis Stream"
+    Value: !Ref KinesisStream
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisStream"
+
+  StreamARN:
+    Description: "Kenesis Stream ARN"
+    Value: !GetAtt KinesisStream.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisStreamArn"
+
+  KinesisReadPolicy:
+    Description: "Kenesis Stream read policy"
+    Value: !Ref KinesisReadPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisReadPolicy"
+
+  KinesisWritePolicy:
+    Description: "Kenesis Stream write policy"
+    Value: !Ref KinesisWritePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisWritePolicy"

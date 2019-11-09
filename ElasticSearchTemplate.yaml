@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create an ElasticSearch Domain.
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Cluster Configuration
+        Parameters:
+          - DomainName
+          - ElasticSearchVersion
+          - DomainLaunchType
+      -
+        Label:
+          default: Node Configuration
+        Parameters:
+          - ElasticSearchInstanceType
+          - ElasticSearchInstanceCount
+      -
+        Label:
+          default: Network & Encryption
+        Parameters:
+          - NetworkStack
+          - KMSStack
+
+Parameters:
+
+  DomainName:
+    Description: Name of Elastic Search Domain
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: hash-domain
+
+  ElasticSearchVersion:
+    Description: Version of Elastic Search Domain
+    Type: String
+    Default: 7.1
+
+  ElasticSearchInstanceType:
+    Description: Instance Type of Elastic Search Domain
+    Type: String
+    Default: m5.large.elasticsearch
+
+  ElasticSearchInstanceCount:
+    Description: Number of instances
+    Type: Number
+    Default: 2
+
+  DomainLaunchType:
+    Description: Public or VPC Domain
+    Type: String
+    Default: Public
+    AllowedValues:
+      - "Public"
+      - "VPC"
+
+  NetworkStack:
+    Description: Name of Network Stack that will contain a Private Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+
+  KMSStack:
+    Description: Name of KMS Stack that exports a KMS key
+    Type: String
+    Default: HashKMSStack
+
+Conditions:
+
+  VPCDomain: !Equals [ "VPC" , !Ref DomainLaunchType ]
+
+Resources:
+
+  ElasticSearchDomainSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: VPCDomain
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-ElasticSearchGroup-${DomainName}"
+      GroupDescription: "Security Group for ElasticSearch Domain"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId:
+            Fn::ImportValue: !Sub "${NetworkStack}-DefaultSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ElasticSearchDomainSecurityGroup"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  ElasticSearchDomain:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      AccessPolicies:
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": [
+                  "*"
+                ]
+              },
+              "Action": [
+                "es:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "IpAddress": {
+                  "aws:SourceIp": [
+                    {"Fn::ImportValue" : {"Fn::Sub" : "${NetworkStack}-BastionSourceIp"}}
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      # AdvancedOptions:
+      #   Key : Value
+      DomainName: !Ref DomainName
+      EBSOptions:
+        EBSEnabled: True
+        # Iops: 10000
+        VolumeSize: 10
+        VolumeType: gp2
+      ElasticsearchClusterConfig:
+        # DedicatedMasterCount: 1
+        DedicatedMasterEnabled: False
+        # DedicatedMasterType: !Ref ElasticSearchInstanceType
+        InstanceCount: !Ref ElasticSearchInstanceCount
+        InstanceType: !Ref ElasticSearchInstanceType
+        ZoneAwarenessConfig:
+          AvailabilityZoneCount: 2
+        ZoneAwarenessEnabled: True
+      ElasticsearchVersion: !Ref ElasticSearchVersion
+      EncryptionAtRestOptions:
+          Enabled: True
+          KmsKeyId:
+            Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+      NodeToNodeEncryptionOptions:
+        Enabled: True
+      SnapshotOptions:
+        AutomatedSnapshotStartHour: 0
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${DomainName}"
+      VPCOptions:
+        !If
+          - VPCDomain
+          -
+            SecurityGroupIds:
+              - !Ref ElasticSearchDomainSecurityGroup
+            SubnetIds:
+              - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet1Id"
+              - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet2Id"
+          - !Ref "AWS::NoValue"
+
+  ElasticSearchPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to read 7 write to: ${ElasticSearchDomain}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${ElasticSearchDomain}-${AWS::Region}-read-write-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - "es:DescribeElasticsearchDomain"
+              - "es:DescribeElasticsearchDomains"
+              - "es:DescribeElasticsearchDomainConfig"
+              - "es:ESHttpPost"
+              - "es:ESHttpPut"
+            Resource:
+              - !GetAtt ElasticSearchDomain.DomainArn
+              - !Join [ "" , [ !GetAtt ElasticSearchDomain.DomainArn, "/*" ] ]
+              # - Fn::Join:
+              #     - ""
+              #     -
+              #       - !GetAtt ElasticSearchDomain.DomainArn
+              #       - "/*"
+          -
+            Effect: "Allow"
+            Action:
+              - "es:ESHttpGet"
+            Resource: !Join [ "" , [ !GetAtt ElasticSearchDomain.DomainArn, "/*" ] ]
+
+Outputs:
+  ElasticSearchDomainArn:
+    Description: "Elastic Search Domain ARN"
+    Value: !GetAtt ElasticSearchDomain.DomainArn
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticSearchDomainArn"
+  ElasticSearchDomainEndpoint:
+    Description: "Elastic Search Domain Endpoint"
+    Value: !GetAtt ElasticSearchDomain.DomainEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticSearchDomainEndpoint"
+  ElasticSearchPolicy:
+    Description: "Elastic Search Domain IAM Policy"
+    Value: !Ref ElasticSearchPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticSearchPolicy"

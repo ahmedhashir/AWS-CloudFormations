@@ -1,0 +1,458 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create a RedShift Cluster.
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      RedshiftAccountID: "193672423079"
+    us-east-2:
+      RedshiftAccountID: "391106570357"
+    us-west-1:
+      RedshiftAccountID: "262260360010"
+    us-west-2:
+      RedshiftAccountID: "902366379725"
+    ca-central-1:
+      RedshiftAccountID: "907379612154"
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Cluster Configuration
+        Parameters:
+          - ClusterName
+          - PublicCluster
+      -
+        Label:
+          default: Node Configuration
+        Parameters:
+          - ClusterType
+          - NodeType
+          - NumberOfNodes
+      -
+        Label:
+          default: Database Configuration
+        Parameters:
+          - DBName
+      -
+        Label:
+          default: Network, Encryption & Storage
+        Parameters:
+          - NetworkStack
+          - KMSStack
+          - S3Stack
+      -
+        Label:
+          default: Logging Configuration
+        Parameters:
+          - EnableLogging
+
+Parameters:
+
+  ClusterName:
+    Description: Name of RedShift Cluster
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: hash-cluster
+
+  ClusterType:
+    Description: Type of RedShift Cluster
+    Type: String
+    Default: "multi-node"
+    AllowedValues:
+      - "multi-node"
+      - "single-node"
+
+  NumberOfNodes:
+    Description: Type of RedShift Cluster
+    Type: Number
+    Default: 2
+
+  NodeType:
+    Description: Type of Node
+    Type: String
+    Default: "dc2.large"
+    AllowedValues:
+      - "dc2.large"
+      - "dc2.8xlarge"
+      - "ds2.xlarge"
+      - "ds2.8xlarge"
+
+  PublicCluster:
+    Description: Public or VPC Cluster
+    Type: String
+    Default: "True"
+    AllowedValues:
+      - "True"
+      - "False"
+
+  DBName:
+    Description: Name of Network Stack that will contain a Private Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: hash
+
+  NetworkStack:
+    Description: Name of Network Stack that exports Subnets
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+
+  KMSStack:
+    Description: Name of KMS Stack that exports a KMS key
+    Type: String
+    Default: HashKMSStack
+
+  S3Stack:
+    Description: Name of S3 Stack
+    Type: String
+    Default: HashS3Stack
+
+  EnableLogging:
+    Description: Enable Redshfit Logging to S3 Bucket
+    Type: String
+    Default: "False"
+    AllowedValues:
+      - "True"
+      - "False"
+
+Conditions:
+  MultiNodeCluster: !Equals [ "multi-node" , !Ref ClusterType ]
+  PublicCluster: !Equals [ "True", !Ref PublicCluster ]
+  KMSKeySpecified: !Not [ !Equals [ "", !Ref KMSStack ] ]
+  EnableLogging: !Equals [ "True", !Ref EnableLogging ]
+
+Resources:
+
+  RedShiftClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-RedShift-${ClusterName}"
+      GroupDescription: "Security Group for RedShift Cluster"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+      SecurityGroupIngress:
+        -
+          Description: "Allow access from Default Security Group"
+          IpProtocol: tcp
+          FromPort: 5439
+          ToPort: 5439
+          SourceSecurityGroupId:
+            Fn::ImportValue: !Sub "${NetworkStack}-DefaultSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-RedShiftClusterSecurityGroup"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  RedshiftSelfIngressRule:
+    Condition: PublicCluster
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: "Self Ingress Rule"
+      GroupId: !Ref RedShiftClusterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref RedShiftClusterSecurityGroup
+
+  BastionIngressRule:
+    Condition: PublicCluster
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: "Allow access from Bastion Source IP"
+      GroupId: !GetAtt RedShiftClusterSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 5439
+      ToPort: 5439
+      CidrIp:
+        Fn::ImportValue: !Sub "${NetworkStack}-BastionSourceIp"
+
+  RedShiftIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "redshift.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "S3Policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                Resource:
+                  - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+                  - !Join
+                      - "/"
+                      -
+                        - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+                        - "*"
+        -
+          PolicyName: "KMSKeyPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "kms:Decrypt"
+                  - "kms:GenerateDataKey"
+                Resource:
+                  - Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+      # ManagedPolicyArns:
+        # - arn:aws:iam::aws:policy/AWSGlueConsoleFullAccess
+      RoleName: !Join [ "-", [ !Ref ClusterName, !Ref "AWS::Region", "role" ] ]
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  ClusterSubnetGroup:
+    Type: AWS::Redshift::ClusterSubnetGroup
+    Properties:
+      Description: "Subnet Group for Cluster"
+      SubnetIds:
+        !If
+          - PublicCluster
+          -
+            - Fn::ImportValue: !Sub "${NetworkStack}-PublicSubnet1Id"
+            - Fn::ImportValue: !Sub "${NetworkStack}-PublicSubnet2Id"
+          -
+            - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet1Id"
+            - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet2Id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-RedShiftCluster"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  RedShiftCluster:
+    Type: AWS::Redshift::Cluster
+    Properties:
+      AllowVersionUpgrade: True
+      AutomatedSnapshotRetentionPeriod: 1
+      # AvailabilityZone: String
+      ClusterIdentifier: !Ref ClusterName
+      # ClusterParameterGroupName: String
+      # ClusterSecurityGroups:
+      #   - String
+      ClusterSubnetGroupName: !Ref ClusterSubnetGroup
+      ClusterType: !Ref ClusterType
+      # ClusterVersion: String
+      DBName: !Ref DBName
+      # ElasticIp: String
+      Encrypted:
+        !If
+          - KMSKeySpecified
+          - True
+          - !Ref "AWS::NoValue"
+      # HsmClientCertificateIdentifier: String
+      # HsmConfigurationIdentifier: String
+      IamRoles:
+        - !GetAtt RedShiftIAMRole.Arn
+        - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/redshift.amazonaws.com/AWSServiceRoleForRedshift"
+      KmsKeyId:
+        !If
+          - KMSKeySpecified
+          - Fn::ImportValue: !Sub "${KMSStack}-KeyAlias"
+          - !Ref "AWS::NoValue"
+      LoggingProperties:
+        !If
+          - EnableLogging
+          -
+            BucketName:
+              Fn::ImportValue: !Sub "${S3Stack}-S3BucketName"
+            # S3KeyPrefix: !Sub "${S3KeyPrefix}/${ClusterName}"
+          - !Ref "AWS::NoValue"
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref RedshiftSecret, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref RedshiftSecret, ':SecretString:password}}' ]]
+      NodeType: !Ref NodeType
+      NumberOfNodes:
+        !If
+          - MultiNodeCluster
+          - !Ref NumberOfNodes
+          - !Ref "AWS::NoValue"
+      # OwnerAccount: String
+      # Port: Integer
+      # PreferredMaintenanceWindow: String
+      PubliclyAccessible:
+        !If
+          - PublicCluster
+          - True
+          - False
+      # SnapshotClusterIdentifier: String
+      # SnapshotIdentifier: String
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-RedShiftCluster"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+        # - Key: S3BucketPolicy
+        #   Value: !Ref RedshiftLoggingBucketPolicy
+      VpcSecurityGroupIds:
+        - !Ref RedShiftClusterSecurityGroup
+
+  RedshiftLoggingBucketPolicy:
+    Condition: EnableLogging
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Fn::ImportValue: !Sub "${S3Stack}-S3BucketName"
+      PolicyDocument:
+        Statement:
+          -
+            Sid: "Put bucket policy needed for Redshift audit logging"
+            Effect: "Allow"
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  -
+                    - "arn:aws:iam::"
+                    -
+                      Fn::FindInMap:
+                        - RegionMap
+                        - !Ref AWS::Region
+                        - RedshiftAccountID
+                    - ":user/logs"
+            Action:
+              - "s3:PutObject"
+            Resource:
+              Fn::Join:
+                - ""
+                -
+                  - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+                  - "/*"
+          -
+            Sid: "Get bucket policy needed for audit logging"
+            Effect: "Allow"
+            Principal:
+              AWS:
+                Fn::Join:
+                  - ""
+                  -
+                    - "arn:aws:iam::"
+                    -
+                      Fn::FindInMap:
+                        - RegionMap
+                        - !Ref AWS::Region
+                        - RedshiftAccountID
+                    - ":user/logs"
+            Action:
+              - "s3:GetBucketAcl"
+            Resource:
+              Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+
+  RedshiftGlueConnection:
+    Type: AWS::Glue::Connection
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      ConnectionInput:
+        ConnectionProperties:
+          {
+            "JDBC_CONNECTION_URL": { "Fn::Sub": "jdbc:redshift://${RedShiftCluster.Endpoint.Address}:${RedShiftCluster.Endpoint.Port}/${DBName}" },
+            "JDBC_ENFORCE_SSL": "true",
+            "PASSWORD": {"Fn::Join": ["", ["{{resolve:secretsmanager:",{"Ref": "RedshiftSecret"},":SecretString:password}}"] ] },
+            "USERNAME": {"Fn::Join": ["", ["{{resolve:secretsmanager:",{"Ref": "RedshiftSecret"},":SecretString:username}}"] ] }
+          }
+        ConnectionType: "JDBC"
+        Description: !Sub "Glue connection for Redshift Cluster: ${ClusterName}"
+        # MatchCriteria:
+        #   - String
+        Name: !Sub "${ClusterName}-connection"
+        PhysicalConnectionRequirements:
+          # AvailabilityZone: String
+          SecurityGroupIdList:
+            - !Ref RedShiftClusterSecurityGroup
+          SubnetId:
+            Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet1Id"
+
+  RedshiftSecret:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Name: !Sub "${ClusterName}-secret"
+      Description: !Sub "Secret for Redshift Cluster: ${ClusterName}"
+      KmsKeyId:
+        !If
+          - KMSKeySpecified
+          - Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+          - !Ref "AWS::NoValue"
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 10
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+Outputs:
+  RedShiftCluster:
+    Description: "RedShift Cluster Name"
+    Value: !Ref RedShiftCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftCluster"
+  RedShiftClusterEndpoint:
+    Description: "RedShift Cluster Endpoint"
+    Value: !Sub "jdbc:redshift://${RedShiftCluster.Endpoint.Address}:${RedShiftCluster.Endpoint.Port}/${DBName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftClusterEndpoint"
+  RedShiftClusterEndpointAddress:
+    Description: "RedShift Cluster Endpoint Address"
+    Value: !GetAtt RedShiftCluster.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftClusterEndpointAddress"
+  RedShiftClusterEndpointPort:
+    Description: "RedShift Cluster Endpoint Port"
+    Value: !GetAtt RedShiftCluster.Endpoint.Port
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftClusterEndpointPort"
+  RedShiftClusterDBName:
+    Description: "RedShift Cluster Database Name"
+    Value: !Sub "${DBName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftClusterDBName"
+  RedShiftClusterSecurityGroup:
+    Description: "RedShift Cluster Security Group"
+    Value: !GetAtt RedShiftClusterSecurityGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftClusterSecurityGroupId"
+  RedshiftGlueConnection:
+    Description: "RedShift Cluster Glue Connection"
+    Value: !Ref RedshiftGlueConnection
+    Export:
+      Name: !Sub "${AWS::StackName}-RedshiftGlueConnection"
+  RedshiftSecret:
+    Description: "RedShift Cluster Secret"
+    Value: !Ref RedshiftSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-RedshiftSecret"
+  RedShiftIAMRole:
+    Description: "RedShift IAM Role"
+    Value: !GetAtt RedShiftIAMRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RedShiftIAMRole"

@@ -1,22 +1,23 @@
 AWSTemplateFormatVersion: 2010-09-09
+
+Description: >
+              This CloudFormation template will create a RedShift Cluster.
+
 Metadata:
+
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      -
-        Label:
-          default: Network
-        Parameters:
-          - NetworkStackName
       -
         Label:
           default: Cluster Configuration
         Parameters:
           - ClusterName
+          - ClusterLaunchType
           - ReleaseLabel
           - KeyPair
           - Applications
-          - LogUri
-      - 
+          - RunTestStep
+      -
         Label:
           default: "Node configuration"
         Parameters:
@@ -24,8 +25,16 @@ Metadata:
           - CoreNodes
           - TaskNodes
           - BidPriceAsPercentageOfOnDemandPrice
+      -
+        Label:
+          default: Network
+        Parameters:
+          - NetworkStack
+          - KMSStack
+          - S3Stack
+
     ParameterLabels:
-      NetworkStackName:
+      NetworkStack:
         default: "Name of network stack"
       ClusterName:
         default: "EMR cluster name"
@@ -33,238 +42,455 @@ Metadata:
         default: "EMR Release"
       KeyPair:
         default: "Key Pair"
-      LogUri:
-        default: "S3 bucket"
       CoreNodes:
         default: "No. of core Nodes"
-      TaskNodes: 
+      TaskNodes:
         default: "No. of task Nodes"
       BidPriceAsPercentageOfOnDemandPrice:
         default: "Bid price %"
       InstanceType:
         default: "Instance Type"
+
 Parameters:
+
   ClusterName:
     Description: "Name of the EMR cluster"
     Type: String
     Default: "Hash-EMR-Cluster"
-  ReleaseLabel: 
+
+  ClusterLaunchType:
+    Description: Public Subnet or Private Subnet
+    Type: String
+    Default: Public
+    AllowedValues:
+      - "Public"
+      - "Private"
+
+  ReleaseLabel:
     Description: "EMR Release version"
     Type: String
-    Default: "emr-5.20.0"
+    Default: "emr-5.27.0"
+
   Applications:
     Description: "Applications"
     Type: CommaDelimitedList
-    Default: "Spark, Livy"
-  LogUri: 
-    Description: "S3 bucket for EMR logs"
-    Type: String
-    Default: "s3://hash-toronto/Logs/EMR/"
-  NetworkStackName:
+    Default: "Presto, Livy"
+
+  NetworkStack:
     Description: Name of Network Stack that will contain a Public Subnet
     Type: String
     MinLength: 1
     MaxLength: 255
     AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
     Default: HashNetworkStack
+
   KeyPair:
     Description: "Key Pair for EC2 instances"
     Type: AWS::EC2::KeyPair::KeyName
   CoreNodes:
     Description: "Number of Core nodes"
     Type: Number
-    Default: 0
+    Default: 2
+
   TaskNodes:
     Description: "Number of task nodes"
     Type: Number
-    Default: 0  
+    Default: 0
+
   InstanceType:
     Description: "Instance Type of Core Node"
     Type: String
-    Default: "m3.xlarge"
+    Default: "m5.xlarge"
+
   BidPriceAsPercentageOfOnDemandPrice:
     Description: "The bid price, as a percentage of the On-Demand price"
     Type: Number
     Default: 50
+
+  KMSStack:
+    Description: Name of KMS Stack that exports a KMS key
+    Type: String
+    Default: HashKMSStack
+
+  S3Stack:
+    Description: Name of S3 Stack
+    Type: String
+    Default: HashS3Stack
+
   RunTestStep:
     Description: "Run a test upon cluster statup"
     Type: String
     Default: "Yes"
     AllowedValues: [ "Yes", "No" ]
+
 Conditions:
-  CreateCoreNodes: !Not [ !Equals [ !Ref CoreNodes, "0" ] ]
+
+  UseSpotInstance: !Not [ !Equals [ !Ref BidPriceAsPercentageOfOnDemandPrice, "0" ] ]
   CreateTaskNodes: !Not [ !Equals [ !Ref TaskNodes, "0" ] ]
+  PublicCluster: !Equals [ !Ref ClusterLaunchType, "Public" ]
   RunTestStep: !Equals [ !Ref RunTestStep, "Yes" ]
+  KMSStackSpecified: !Not [ !Equals [ "", !Ref KMSStack ] ]
+  S3StackSpecified: !Not [ !Equals [ "", !Ref S3Stack ] ]
+
 Resources:
-  EmrMasterNodeSecurityGroup:
+
+  EmrManagedMasterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    Description: "Security Group for EMR Master Node"
+    # DeletionPolicy: Retain
     Properties:
-      GroupName: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
+      GroupName: !Sub "${AWS::StackName}-EmrManagedMasterSecurityGroup"
       GroupDescription: "Security Group for EMR Master Node"
-      VpcId: 
-        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
-      SecurityGroupIngress:
-        -
-          IpProtocol: tcp
-          FromPort: '8443'
-          ToPort: '8443'
-          SourceSecurityGroupId: !Ref EmrServiceAccessSecurityGroup
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+      # SecurityGroupIngress:
+      #   -
+      #     IpProtocol: tcp
+      #     FromPort: '8443'
+      #     ToPort: '8443'
+      #     SourceSecurityGroupId: !Ref ServiceAccessSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
-  EmrMasterNodeSGSSHAccess:
+          Value: !Sub "${AWS::StackName}-EmrManagedMasterSecurityGroup"
+        - Key: Type
+          Value: "ElasticMapReduce-Master-Private"
+
+  # EmrMasterNodeSGSSHAccess:
+  #   Type: AWS::EC2::SecurityGroup
+  #   DeletionPolicy: Retain
+  #   Properties:
+  #     GroupName: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
+  #     GroupDescription: "Security Group to allow SSH into Master node from bastion host"
+  #     VpcId:
+  #       Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+  #     # SecurityGroupIngress:
+  #     #   -
+  #     #     IpProtocol: tcp
+  #     #     FromPort: '22'
+  #     #     ToPort: '22'
+  #     #     SourceSecurityGroupId:
+  #     #       Fn::ImportValue:
+  #     #         !Sub "${NetworkStack}-DefaultSecurityGroup"
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
+
+  EmrManagedSlaveSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
+    # DeletionPolicy: Retain
     Properties:
-      GroupName: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
-      GroupDescription: "Security Group to allow SSH into Master node from bastion host"
-      VpcId: 
-        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
-      SecurityGroupIngress:
-        -
-          IpProtocol: tcp
-          FromPort: '22'
-          ToPort: '22'
-          SourceSecurityGroupId: 
-            Fn::ImportValue:
-              !Sub "${NetworkStackName}-BastionSecurityGroup"       
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-EmrMasterNodeSGSSHAccess"
-  EmrSlaveNodeSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    Description: "Security Group for EMR Slave Node"
-    Properties:
-      GroupName: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"
+      GroupName: !Sub "${AWS::StackName}-EmrManagedSlaveSecurityGroup"
       GroupDescription: "Security Group for EMR Slave Node"
-      VpcId: 
-        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
-      SecurityGroupIngress:
-        -
-          IpProtocol: tcp
-          FromPort: '8443'
-          ToPort: '8443'
-          SourceSecurityGroupId: !Ref EmrServiceAccessSecurityGroup
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+      # SecurityGroupIngress:
+      #   -
+      #     IpProtocol: tcp
+      #     FromPort: '8443'
+      #     ToPort: '8443'
+      #     SourceSecurityGroupId: !Ref ServiceAccessSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"
-  EmrServiceAccessSecurityGroup:
+          Value: !Sub "${AWS::StackName}-EmrManagedSlaveSecurityGroup"
+
+  ServiceAccessSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    Description: "Security Group for EMR Service Access"
+    # DeletionPolicy: Retain
     Properties:
-      GroupName: !Sub "${AWS::StackName}-EmrServiceAccessSecurityGroup"
+      GroupName: !Sub "${AWS::StackName}-ServiceAccessSecurityGroup"
       GroupDescription: "Security Group for EMR Service Access"
-      VpcId: 
-        Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-EmrServiceAccessSecurityGroup"
-  EmrServiceRoleEgressMaster:
-    Type: AWS::EC2::SecurityGroupEgress
-    Properties:
-      GroupId: !Ref EmrServiceAccessSecurityGroup
-      IpProtocol: tcp
-      FromPort: '8443'
-      ToPort: '8443'
-      SourceSecurityGroupId: !Ref EmrMasterNodeSecurityGroup
-  EmrServiceAccessSGEgressSlave:
-    Type: AWS::EC2::SecurityGroupEgress
-    Properties:
-      GroupId: !Ref EmrServiceAccessSecurityGroup
-      IpProtocol: tcp
-      FromPort: '8443'
-      ToPort: '8443'
-      SourceSecurityGroupId: !Ref EmrSlaveNodeSecurityGroup
+          Value: !Sub "${AWS::StackName}-ServiceAccessSecurityGroup"
+
+  # EmrServiceRoleEgressMaster:
+  #   Type: AWS::EC2::SecurityGroupEgress
+  #   Properties:
+  #     GroupId: !Ref ServiceAccessSecurityGroup
+  #     IpProtocol: tcp
+  #     FromPort: '8443'
+  #     ToPort: '8443'
+  #     SourceSecurityGroupId: !Ref EmrManagedMasterSecurityGroup
+
+  # EmrServiceAccessSGEgressSlave:
+  #   Type: AWS::EC2::SecurityGroupEgress
+  #   Properties:
+  #     GroupId: !Ref ServiceAccessSecurityGroup
+  #     IpProtocol: tcp
+  #     FromPort: '8443'
+  #     ToPort: '8443'
+  #     SourceSecurityGroupId: !Ref EmrManagedSlaveSecurityGroup
+
   EMRRoleForEc2:
     Type: AWS::IAM::Role
     Properties:
-      AssumeRolePolicyDocument: 
-        Version: "2012-10-17"
-        Statement: 
-          - 
+      AssumeRolePolicyDocument:
+        Version: "2008-10-17"
+        Statement:
+          -
             Effect: "Allow"
-            Principal: 
-              Service: 
+            Principal:
+              Service:
                 - "ec2.amazonaws.com"
-            Action: 
+            Action:
               - "sts:AssumeRole"
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+        - "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role"
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+        - Fn::ImportValue: !Sub "${S3Stack}-S3UsePolicy"
+        - Fn::ImportValue: !Sub "${KMSStack}-KMSKeyUsePolicy"
+      # Policies:
+      #   -
+      #     PolicyName: "S3Policy"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: "Allow"
+      #           Action:
+      #             - "s3:AbortMultipartUpload"
+      #             - "s3:GetBucketLocation"
+      #             - "s3:GetObject"
+      #             - "s3:ListBucket"
+      #             - "s3:ListBucketMultipartUploads"
+      #             - "s3:PutObject"
+      #             - "s3:DeleteObject"
+      #           Resource:
+      #             - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+      #             - !Join
+      #                 - "/"
+      #                 -
+      #                   - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+      #                   - "*"
+      #   -
+      #     PolicyName: "KMSKeyPolicy"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: "Allow"
+      #           Action:
+      #             - "kms:Decrypt"
+      #             - "kms:Encrypt"
+      #             - "kms:GenerateDataKey"
+      #           Resource:
+      #             - Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
       RoleName: !Join [ "-", [ "EMR-EC2", !Ref "AWS::Region", !Ref ClusterName ] ]
+      Description: !Join [ "-", [ "EMR-EC2", !Ref "AWS::Region", !Ref ClusterName, "Role" ] ]
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
   EmrEc2RoleInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
         - !Ref EMRRoleForEc2
       InstanceProfileName: !Ref EMRRoleForEc2
+
   EMRServiceRole:
     Type: AWS::IAM::Role
     Properties:
-      AssumeRolePolicyDocument: 
-        Version: "2012-10-17"
-        Statement: 
-          - 
+      AssumeRolePolicyDocument:
+        Version: "2008-10-17"
+        Statement:
+          -
             Effect: "Allow"
-            Principal: 
-              Service: 
+            Principal:
+              Service:
                 - "elasticmapreduce.amazonaws.com"
-            Action: 
+            Action:
               - "sts:AssumeRole"
+      # Policies:
+      #   -
+      #     PolicyName: "S3Policy"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: "Allow"
+      #           Action:
+      #             - "s3:AbortMultipartUpload"
+      #             - "s3:GetBucketLocation"
+      #             - "s3:GetObject"
+      #             - "s3:ListBucket"
+      #             - "s3:ListBucketMultipartUploads"
+      #             - "s3:PutObject"
+      #             - "s3:DeleteObject"
+      #           Resource:
+      #             - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+      #             - !Join
+      #                 - "/"
+      #                 -
+      #                   - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+      #                   - "*"
+      #   -
+      #     PolicyName: "KMSKeyPolicy"
+      #     PolicyDocument:
+      #       Version: "2012-10-17"
+      #       Statement:
+      #         - Effect: "Allow"
+      #           Action:
+      #             - "kms:Decrypt"
+      #             - "kms:Encrypt"
+      #             - "kms:GenerateDataKey"
+      #           Resource:
+      #             - Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
-        - arn:aws:iam::aws:policy/AmazonElasticMapReduceReadOnlyAccess
+        - "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole"
+        - "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceEditorsRole"
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+        - Fn::ImportValue: !Sub "${S3Stack}-S3UsePolicy"
+        - Fn::ImportValue: !Sub "${KMSStack}-KMSKeyUsePolicy"
+        # - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforAutoScalingRole
+        # - arn:aws:iam::aws:policy/aws-service-role/AmazonEMRCleanupPolicy
+        # - arn:aws:iam::aws:policy/AmazonElasticMapReduceReadOnlyAccess
       RoleName: !Join [ "-", [ "EMR-Service", !Ref "AWS::Region", !Ref ClusterName ] ]
-  EmrServiceRoleInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
+      Description: !Join [ "-", [ "EMR-Service", !Ref "AWS::Region", !Ref ClusterName, "Role" ] ]
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  EMRSecurityConfiguration:
+    Type: AWS::EMR::SecurityConfiguration
+    Condition: KMSStackSpecified
     Properties:
-      Roles:
-        - !Ref EMRServiceRole
-      InstanceProfileName: !Ref EMRServiceRole
+      Name: !Sub "${ClusterName}-SecurityConfiguration"
+      SecurityConfiguration:
+        {
+          "EncryptionConfiguration": {
+              "AtRestEncryptionConfiguration": {
+                  "S3EncryptionConfiguration": {
+                      "EncryptionMode": "SSE-KMS",
+                      "AwsKmsKey":
+                        {"Fn::ImportValue" : {"Fn::Sub" : "${KMSStack}-KMSKey"}}
+                  },
+                  "LocalDiskEncryptionConfiguration": {
+                      "EncryptionKeyProviderType": "AwsKms",
+                      "AwsKmsKey": {"Fn::ImportValue" : {"Fn::Sub" : "${KMSStack}-KMSKey"}},
+                      "EnableEbsEncryption": true
+                  }
+              },
+              "EnableInTransitEncryption": false,
+              "EnableAtRestEncryption": true
+          }
+        }
+
   EMRCluster:
     Type: AWS::EMR::Cluster
-    DependsOn: 
-      - EmrEc2RoleInstanceProfile
-      - EmrServiceRoleInstanceProfile
     Properties:
-      Instances:
-        MasterInstanceFleet:
-          Name: "Master Nodes Instance Fleet"
-          TargetSpotCapacity: 1
-          InstanceTypeConfigs:
-            -
-              InstanceType: !Ref InstanceType
-              BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
-        CoreInstanceFleet:
-          Name: "Core Nodes Instance Fleet"
-          TargetSpotCapacity: !Ref CoreNodes
-          InstanceTypeConfigs:
-            -
-              InstanceType: !Ref InstanceType
-              BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
-        Ec2SubnetId: 
-          Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
-        EmrManagedMasterSecurityGroup: !Ref EmrMasterNodeSecurityGroup
-        EmrManagedSlaveSecurityGroup: !Ref EmrSlaveNodeSecurityGroup
-        ServiceAccessSecurityGroup: !Ref EmrServiceAccessSecurityGroup
-        AdditionalMasterSecurityGroups: 
-          - !Ref EmrMasterNodeSGSSHAccess
-        Ec2KeyName: !Ref KeyPair 
-      JobFlowRole: !Ref EMRRoleForEc2
-      ServiceRole: !Ref EMRServiceRole
-      Name: !Ref ClusterName
-      LogUri: !Ref LogUri
-      ReleaseLabel: !Ref ReleaseLabel
-      Applications: 
+      # AdditionalInfo:
+      Applications:
+        - Name: "Hadoop"
+        - Name: "Spark"
+        - Name: "Hive"
+        - Name: "Hue"
         - Name: !Select [ 0, !Ref Applications ]
         - Name: !Select [ 1, !Ref Applications ]
-      Tags:
+      # AutoScalingRole: EMR_AutoScaling_DefaultRole
+      # BootstrapActions:
+      Configurations:
         -
-          Key: "Name"
-          Value: !Join [ "-", [ "HashEMR", !Ref "AWS::Region" ] ]
+          Classification: "hive-site"
+          ConfigurationProperties:
+            "hive.metastore.client.factory.class" : "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+        -
+          Classification: "presto-connector-hive"
+          ConfigurationProperties:
+            "hive.metastore.glue.datacatalog.enabled" : "true"
+        -
+          Classification: "spark-hive-site"
+          ConfigurationProperties:
+            "hive.metastore.client.factory.class" : "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+        -
+          Classification: "core-site"
+          ConfigurationProperties:
+            "hadoop.proxyuser.livy.groups" : "*"
+            "hadoop.proxyuser.livy.hosts" : "*"
+        -
+          Classification: "livy-conf"
+          ConfigurationProperties:
+            "livy.impersonation.enabled" : "true"
+      # CustomAmiId:
+      # EbsRootVolumeSize:
+      Instances:
+        AdditionalMasterSecurityGroups:
+          - Fn::ImportValue: !Sub "${NetworkStack}-DefaultSecurityGroup"
+          -
+            !If
+              - PublicCluster
+              - Fn::ImportValue: !Sub "${NetworkStack}-BastionSecurityGroup"
+              - !Ref "AWS::NoValue"
+        # AdditionalSlaveSecurityGroups:
+        CoreInstanceFleet:
+          !If
+            - UseSpotInstance
+            -
+              Name: "Core Nodes Instance Fleet - Spot"
+              TargetSpotCapacity: !Ref CoreNodes
+              InstanceTypeConfigs:
+                -
+                  InstanceType: !Ref InstanceType
+                  BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
+            -
+              Name: "Core Nodes Instance Fleet - OnDemand"
+              TargetOnDemandCapacity: !Ref CoreNodes
+              InstanceTypeConfigs:
+                -
+                  InstanceType: !Ref InstanceType
+        # CoreInstanceGroup:
+        Ec2KeyName: !Ref KeyPair
+        Ec2SubnetIds:
+          !If
+            - PublicCluster
+            -
+              - Fn::ImportValue: !Sub "${NetworkStack}-PublicSubnet1Id"
+              - Fn::ImportValue: !Sub "${NetworkStack}-PublicSubnet2Id"
+            -
+              - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet1Id"
+              - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet2Id"
+        EmrManagedMasterSecurityGroup: !Ref EmrManagedMasterSecurityGroup
+        EmrManagedSlaveSecurityGroup: !Ref EmrManagedSlaveSecurityGroup
+        # HadoopVersion:
+        # KeepJobFlowAliveWhenNoSteps:
+        MasterInstanceFleet:
+          Name: "Master Nodes Instance Fleet"
+          TargetOnDemandCapacity: 1
+          InstanceTypeConfigs:
+            -
+              InstanceType: !Ref InstanceType
+              # BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
+        # MasterInstanceGroup:
+        # Placement:
+        ServiceAccessSecurityGroup:
+          !If
+            - PublicCluster
+            - !Ref "AWS::NoValue"
+            - !Ref ServiceAccessSecurityGroup
+        # TerminationProtected:
+      JobFlowRole: !Ref EmrEc2RoleInstanceProfile
+      # KerberosAttributes:
+      LogUri:
+        !If
+          - S3StackSpecified
+          -
+            !Join
+              - ""
+              -
+                - "s3://"
+                - Fn::ImportValue: !Sub "${S3Stack}-S3BucketName"
+                - "/Logs/EMR/"
+          - !Ref "AWS::NoValue"
+      Name: !Ref ClusterName
+      ReleaseLabel: !Ref ReleaseLabel
+      # ScaleDownBehavior:
+      # SecurityConfiguration: !Ref EMRSecurityConfiguration
+      ServiceRole: !Ref EMRServiceRole
+      # Steps:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EMRCluster"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
   TaskInstanceFleet:
     Type: AWS::EMR::InstanceFleetConfig
     Condition: CreateTaskNodes
@@ -277,37 +503,54 @@ Resources:
         -
           InstanceType: !Ref InstanceType
           BidPriceAsPercentageOfOnDemandPrice: !Ref BidPriceAsPercentageOfOnDemandPrice
-  TestStep:
+
+  SparkTestStep:
     Type: AWS::EMR::Step
     Condition: RunTestStep
-    Properties: 
+    Properties:
       ActionOnFailure: "CONTINUE"
-      HadoopJarStep: 
-        Args: 
-          - "5"
+      HadoopJarStep:
+        Args:
+          - "spark-submit"
+          - "--deploy-mode"
+          - "cluster"
+          - "--class"
+          - "org.apache.spark.examples.SparkPi"
+          - "/usr/lib/spark/examples/jars/spark-examples.jar"
           - "10"
-        Jar: "s3://emr-cfn-test/hadoop-mapreduce-examples-2.6.0.jar"
-        MainClass: "pi"
-      Name: "TestStep"
+        Jar: "command-runner.jar"
+        MainClass: ""
       JobFlowId: !Ref EMRCluster
+      Name: "SparkTestStep"
+
 Outputs:
   MasterNodeDNS:
-    Description: "DNS for EMR Master Node"
+    Description: "IP address of EMR cluster MasterNode"
     Value: !GetAtt EMRCluster.MasterPublicDNS
     Export:
-      Name: !Sub "${AWS::StackName}-MasterNodePublicDNS"
+      Name: !Sub "${AWS::StackName}-MasterPublicDNS"
   ClusterId:
     Description: "Cluster ID"
     Value: !Ref EMRCluster
-    Export: 
+    Export:
       Name: !Sub "${AWS::StackName}-ClusterId"
-  EmrMasterNodeSecurityGroup:
+  EmrManagedMasterSecurityGroup:
     Description: "Security Group of EMR Master Node"
-    Value: !Ref EmrMasterNodeSecurityGroup
+    Value: !Ref EmrManagedMasterSecurityGroup
     Export:
-      Name: !Sub "${AWS::StackName}-EmrMasterNodeSecurityGroup"
-  EmrSlaveNodeSecurityGroup:
+      Name: !Sub "${AWS::StackName}-EmrManagedMasterSecurityGroup"
+  EmrManagedSlaveSecurityGroup:
     Description: "Security Group of EMR Master Node"
-    Value: !Ref EmrSlaveNodeSecurityGroup
+    Value: !Ref EmrManagedSlaveSecurityGroup
     Export:
-      Name: !Sub "${AWS::StackName}-EmrSlaveNodeSecurityGroup"
+      Name: !Sub "${AWS::StackName}-EmrManagedSlaveSecurityGroup"
+  EMRServiceRole:
+    Description: "EMR Service Role"
+    Value: !GetAtt EMRServiceRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EMRServiceRole"
+  EmrEc2RoleInstanceProfile:
+    Description: "EMR EC2 Instance Profile"
+    Value: !GetAtt EmrEc2RoleInstanceProfile.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EmrEc2RoleInstanceProfile"

@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+              This Cloudformation template creates an IAM Role for Glue Jobs and Glue Crawlers.
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Reference Stacks
+        Parameters:
+          - NetworkStack
+          - S3Stack
+          - KMSStack
+
+Parameters:
+
+  NetworkStack:
+    Description: Name of Network Stack that will contain a Public Subnet
+    Type: String
+    MinLength: 1
+    MaxLength: 255
+    AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
+    Default: HashNetworkStack
+
+  S3Stack:
+    Description: Name of S3 Stack
+    Type: String
+    Default: HashS3Stack
+
+  KMSStack:
+    Description: Name of KMS Stack that exports a KMS key
+    Type: String
+    Default: HashKMSStack
+
+Conditions:
+
+  KMSKeySpecified: !Not [ !Equals [ "", !Ref KMSStack ] ]
+
+Resources:
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Description: "Hash Glue Database"
+        LocationUri:
+          !Join
+            - ""
+            -
+              - "s3://"
+              - Fn::ImportValue: !Sub "${S3Stack}-S3BucketName"
+              - "/"
+        Name: hash-db
+        # Parameters: Json
+
+  SecurityConfiguration:
+    Type: AWS::Glue::SecurityConfiguration
+    Condition: KMSKeySpecified
+    Properties:
+      EncryptionConfiguration:
+        # CloudWatchEncryption:
+        #   CloudWatchEncryptionMode: "SSE-KMS"
+        #   KmsKeyArn:
+        #     Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+        JobBookmarksEncryption:
+          JobBookmarksEncryptionMode: CSE-KMS
+          KmsKeyArn:
+            Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+        S3Encryptions:
+          -
+            KmsKeyArn:
+              Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+            S3EncryptionMode: "SSE-KMS"
+      Name: Hash-SecurityConfiguration
+
+  GlueExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        # - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Policies:
+        -
+          PolicyName: "S3Policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                Resource:
+                  - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+                  - !Join
+                      - "/"
+                      -
+                        - Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+                        - "*"
+        -
+          !If
+            - KMSKeySpecified
+            -
+              PolicyName: "KMSKeyPolicy"
+              PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  - Effect: "Allow"
+                    Action:
+                      - "kms:Decrypt"
+                      - "kms:Encrypt"
+                      - "kms:GenerateDataKey"
+                    Resource:
+                      - Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+            - !Ref "AWS::NoValue"
+        -
+          PolicyName: "DynamoDBPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:DescribeTable"
+                  - "dynamodb:Scan"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
+        -
+          PolicyName: "CloudWatchLogPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:AssociateKmsKey"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:/aws-glue/*"
+      RoleName: !Join [ "-", [ "HashGlueExecutionRole", !Ref "AWS::Region" ] ]
+      Tags:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  GlueExecutionRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref GlueExecutionRole
+      InstanceProfileName: !Join [ "-", [ "HashGlueExecutionRole", !Ref "AWS::Region" ] ]
+
+  GlueInterfaceEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      # PolicyDocument: Json
+      PrivateDnsEnabled: True
+      # RouteTableIds:
+      #   - String
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "${NetworkStack}-DefaultSecurityGroup"
+      ServiceName: !Join [ "", [ "com.amazonaws.", !Ref "AWS::Region", ".glue" ] ]
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet1Id"
+        - Fn::ImportValue: !Sub "${NetworkStack}-PrivateSubnet2Id"
+      VpcEndpointType: "Interface"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStack}-VPCID"
+
+Outputs:
+
+  GlueExecutionRole:
+    Description: "Glue Execution Role Arn"
+    Value: !GetAtt GlueExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GlueExecutionRoleArn"
+
+  SecurityConfiguration:
+    Condition: KMSKeySpecified
+    Description: "Glue Security Configuration"
+    Value: !Ref SecurityConfiguration
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityConfiguration"
+
+  GlueInterfaceEndPoint:
+    Description: "Glue VPC Endpoint"
+    Value: !Ref GlueInterfaceEndPoint
+    Export:
+      Name: !Sub "${AWS::StackName}-GlueInterfaceEndPoint"
+

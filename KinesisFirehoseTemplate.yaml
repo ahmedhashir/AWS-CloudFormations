@@ -1,0 +1,518 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+              This CloudFormation template will create a Kinesis Firehose Delivery Stream.
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      FirehoseIP: "52.70.63.192/27"
+    us-east-2:
+      FirehoseIP: "13.58.135.96/27"
+    us-west-1:
+      FirehoseIP: "13.57.135.192/27"
+    us-west-2:
+      FirehoseIP: "52.89.255.224/27"
+    ca-central-1:
+      FirehoseIP: "35.183.92.128/27"
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Delivery Stream Configuration
+        Parameters:
+          - DeliveryStreamName
+          - CompressionFormat
+          - IntervalInSeconds
+          - SizeInMBs
+      -
+        Label:
+          default: Source Configuration
+        Parameters:
+          - DeliveryStreamType
+          - KinesisStreamStack
+      -
+        Label:
+          default: S3 Configuration for Destinatioin and Errrors
+        Parameters:
+          - S3Stack
+          - S3Prefix
+          - ErrorOutputPrefix
+      -
+        Label:
+          default: Destination Configuration
+        Parameters:
+          - DestinationType
+          - RedshiftStack
+          - ElasticSearchStack
+      -
+        Label:
+          default: Encryption
+        Parameters:
+          - KMSStack
+      -
+        Label:
+          default: Redshift Destination Configuration
+        Parameters:
+          - RedshiftDataTableName
+          - RedshiftUser
+          - RedshiftPassword
+          - CopyOptions
+      -
+        Label:
+          default: Elastic Search Destination Configuration
+        Parameters:
+          - IndexName
+
+Parameters:
+
+  DeliveryStreamName:
+    Description: "Name of Kinesis Stream"
+    Type: "String"
+    Default: "HashFirehoseStream"
+
+  DeliveryStreamType:
+    Description: "Stream Type"
+    Type: String
+    Default: "DirectPut"
+    AllowedValues:
+      - "DirectPut"
+      - "KinesisStreamAsSource"
+
+  DestinationType:
+    Description: "Firehose Destination Type"
+    Type: String
+    Default: "S3"
+    AllowedValues:
+      - "S3"
+      - "Redshift"
+      - "ElasticSearch"
+
+  S3Stack:
+    Description: Name of S3 Stack
+    Type: String
+    Default: HashS3Stack
+
+  RedshiftStack:
+    Description: Name of Redshift Stack
+    Type: String
+    Default: HashRedshiftStack
+
+  ElasticSearchStack:
+    Description: Name of Redshift Stack
+    Type: String
+    Default: HashElasticSearchStack
+
+  KinesisStreamStack:
+    Description: Name of Kinesis Stream Stack
+    Type: String
+    Default: HashKinesisStack
+
+  S3Prefix:
+    Description: "A prefix that Kinesis Data Firehose adds to the files that it delivers to the Amazon S3 bucket."
+    Type: "String"
+    Default: "Logs/Firehose/"
+
+  ErrorOutputPrefix:
+    Description: "A prefix that Kinesis Data Firehose evaluates and adds to failed records before writing them to S3. "
+    Type: "String"
+    Default: "Logs/Firehose/Error/"
+
+  CompressionFormat:
+    Description: "S3 Compression Format"
+    Type: String
+    Default: "UNCOMPRESSED"
+    AllowedValues:
+      - "GZIP"
+      - "Snappy"
+      - "UNCOMPRESSED"
+      - "ZIP"
+
+  IntervalInSeconds:
+    Description: "The length of time, in seconds, that Kinesis Data Firehose buffers incoming data before delivering it to the destination."
+    Type: Number
+    MinValue: 60
+    MaxValue: 900
+    Default: 60
+
+  SizeInMBs:
+    Description: "The size of the buffer, in MBs, that Kinesis Data Firehose uses for incoming data before delivering it to the destination."
+    Type: Number
+    MinValue: 1
+    MaxValue: 128
+    Default: 5
+
+  KMSStack:
+    Description: Name of KMS Stack that created a KMS Key
+    Type: String
+    Default: HashKMSStack
+
+  RedshiftUser:
+    Description: "Redshift User"
+    Type: String
+    Default: "admin"
+
+  RedshiftPassword:
+    Description: "Redshift Password"
+    NoEcho: True
+    Type: String
+    Default: "Admin!23"
+
+  RedshiftDataTableName:
+    Description: Redshift Data Table Name
+    Type: String
+
+  CopyOptions:
+    Description: Redshift COPY command options
+    Type: String
+    Default: "JSON 'auto'"
+
+  IndexName:
+    Description: Elastic Search Index Name
+    Type: String
+
+Conditions:
+
+  KMSKeySpecified: !Not [ !Equals [ "" , !Ref KMSStack ] ]
+  KinesisSource: !Equals [ "KinesisStreamAsSource" , !Ref DeliveryStreamType ]
+  S3Destination: !Equals [ "S3" , !Ref DestinationType ]
+  RedShiftDestination: !Equals [ "Redshift" , !Ref DestinationType ]
+  ElasticSearchDestination: !Equals [ "ElasticSearch" , !Ref DestinationType ]
+
+Resources:
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${DeliveryStreamName}"
+      RetentionInDays: 1
+
+  S3DeliveryLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: "S3Delivery"
+
+  RedshiftDeliveryLogStream:
+    Condition: RedShiftDestination
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: "RedshiftDelivery"
+
+  ElasticsearchDeliveryLogStream:
+    Condition: ElasticSearchDestination
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseLogGroup
+      LogStreamName: "ElasticsearchDelivery"
+
+  KinesisFirehoseIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${DeliveryStreamName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: ["firehose.amazonaws.com"]
+            Action: "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Sub ${AWS::AccountId}
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "CloudWatchLogPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${FirehoseLogGroup}:log-stream:${S3DeliveryLogStream}"
+                  -
+                    !If
+                      - RedShiftDestination
+                      - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${FirehoseLogGroup}:log-stream:${RedshiftDeliveryLogStream}"
+                      - !Ref "AWS::NoValue"
+                  -
+                    !If
+                      - ElasticSearchDestination
+                      - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${FirehoseLogGroup}:log-stream:${ElasticsearchDeliveryLogStream}"
+                      - !Ref "AWS::NoValue"
+        # -
+        #   !If
+        #     - ElasticSearchDestination
+        #     -
+        #       PolicyName: "ElasticSearchPolicy"
+        #       PolicyDocument:
+        #         Version: "2012-10-17"
+        #         Statement:
+        #           -
+        #             Effect: "Allow"
+        #             Action:
+        #               - "es:DescribeElasticsearchDomain"
+        #               - "es:DescribeElasticsearchDomains"
+        #               - "es:DescribeElasticsearchDomainConfig"
+        #               - "es:ESHttpPost"
+        #               - "es:ESHttpPut"
+        #             Resource:
+        #               - Fn::ImportValue: !Sub "${ElasticSearchStack}-ElasticSearchDomainArn"
+        #               - Fn::Join:
+        #                   - ""
+        #                   -
+        #                     - Fn::ImportValue: !Sub "${ElasticSearchStack}-ElasticSearchDomainArn"
+        #                     - "/*"
+        #           -
+        #             Effect: "Allow"
+        #             Action:
+        #               - "es:ESHttpGet"
+        #             Resource:
+        #               - Fn::Join:
+        #                   - ""
+        #                   -
+        #                     - Fn::ImportValue: !Sub "${ElasticSearchStack}-ElasticSearchDomainArn"
+        #                     - "/*"
+        #     - !Ref "AWS::NoValue"
+      ManagedPolicyArns:
+        - Fn::ImportValue: !Sub "${S3Stack}-S3WritePolicy"
+        - Fn::ImportValue: !Sub "${S3Stack}-S3ReadPolicy"
+        -
+          !If
+            - KMSKeySpecified
+            - Fn::ImportValue: !Sub "${KMSStack}-KMSKeyUsePolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - KinesisSource
+            - Fn::ImportValue: !Sub "${KinesisStreamStack}-KinesisReadPolicy"
+            - !Ref "AWS::NoValue"
+        -
+          !If
+            - ElasticSearchDestination
+            - Fn::ImportValue: !Sub "${ElasticSearchStack}-ElasticSearchPolicy"
+            - !Ref "AWS::NoValue"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-KinesisFirehoseIAMRole"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  KinesisFirehose:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Ref DeliveryStreamName
+      DeliveryStreamType: !Ref DeliveryStreamType
+      KinesisStreamSourceConfiguration:
+        !If
+          - KinesisSource
+          -
+            KinesisStreamARN:
+              Fn::ImportValue: !Sub "${KinesisStreamStack}-KinesisStreamArn"
+            RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+          - !Ref "AWS::NoValue"
+      ElasticsearchDestinationConfiguration:
+        !If
+          - ElasticSearchDestination
+          -
+            BufferingHints:
+              IntervalInSeconds: !Ref IntervalInSeconds
+              SizeInMBs: !Ref SizeInMBs
+            CloudWatchLoggingOptions:
+              Enabled: True
+              LogGroupName: !Ref FirehoseLogGroup
+              LogStreamName: !Ref ElasticsearchDeliveryLogStream
+            DomainARN:
+              Fn::ImportValue: !Sub "${ElasticSearchStack}-ElasticSearchDomainArn"
+            IndexName: !Ref IndexName
+            IndexRotationPeriod: "NoRotation"
+            # ProcessingConfiguration:
+            RetryOptions:
+              DurationInSeconds: 10
+            RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+            TypeName: ""
+            S3BackupMode: "FailedDocumentsOnly"
+            S3Configuration:
+              BucketARN:
+                Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+              BufferingHints:
+                IntervalInSeconds: !Ref IntervalInSeconds
+                SizeInMBs: !Ref SizeInMBs
+              CloudWatchLoggingOptions:
+                Enabled: True
+                LogGroupName: !Ref FirehoseLogGroup
+                LogStreamName: !Ref S3DeliveryLogStream
+              CompressionFormat: !Ref CompressionFormat
+              EncryptionConfiguration:
+                KMSEncryptionConfig:
+                  AWSKMSKeyARN:
+                    Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+              ErrorOutputPrefix: !Sub "${ErrorOutputPrefix}${DeliveryStreamName}"
+              Prefix: !Sub "${S3Prefix}${DeliveryStreamName}"
+              RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+          - !Ref "AWS::NoValue"
+      RedshiftDestinationConfiguration:
+        !If
+          - RedShiftDestination
+          -
+            CloudWatchLoggingOptions:
+              Enabled: True
+              LogGroupName: !Ref FirehoseLogGroup
+              LogStreamName: !Ref RedshiftDeliveryLogStream
+            ClusterJDBCURL:
+              Fn::ImportValue: !Sub "${RedshiftStack}-RedShiftClusterEndpoint"
+            CopyCommand:
+              CopyOptions: !Ref CopyOptions
+              # DataTableColumns: String
+              DataTableName: !Ref RedshiftDataTableName
+            Username: !Ref RedshiftUser
+            Password: !Ref RedshiftPassword
+            # ProcessingConfiguration:
+            RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+              # Fn::ImportValue: !Sub "${RedshiftStack}-RedShiftIAMRole"
+            S3Configuration:
+              BucketARN:
+                Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+              BufferingHints:
+                IntervalInSeconds: !Ref IntervalInSeconds
+                SizeInMBs: !Ref SizeInMBs
+              CloudWatchLoggingOptions:
+                Enabled: True
+                LogGroupName: !Ref FirehoseLogGroup
+                LogStreamName: !Ref S3DeliveryLogStream
+              CompressionFormat: !Ref CompressionFormat
+              EncryptionConfiguration:
+                KMSEncryptionConfig:
+                  AWSKMSKeyARN:
+                    Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+              # ErrorOutputPrefix: !Sub "${ErrorOutputPrefix}${DeliveryStreamName}"
+              Prefix: !Sub "${S3Prefix}${DeliveryStreamName}"
+              RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+          - !Ref "AWS::NoValue"
+      ExtendedS3DestinationConfiguration:
+        !If
+          - S3Destination
+          -
+            BucketARN:
+              Fn::ImportValue: !Sub "${S3Stack}-S3BucketArn"
+            BufferingHints:
+              IntervalInSeconds: !Ref IntervalInSeconds
+              SizeInMBs: !Ref SizeInMBs
+            CloudWatchLoggingOptions:
+              Enabled: True
+              LogGroupName: !Ref FirehoseLogGroup
+              LogStreamName: !Ref S3DeliveryLogStream
+            CompressionFormat: !Ref CompressionFormat
+            EncryptionConfiguration:
+              KMSEncryptionConfig:
+                AWSKMSKeyARN:
+                  Fn::ImportValue: !Sub "${KMSStack}-KMSKey"
+            ErrorOutputPrefix: !Sub "${ErrorOutputPrefix}${DeliveryStreamName}"
+            Prefix: !Sub "${S3Prefix}${DeliveryStreamName}"
+            # ProcessingConfiguration:
+            #   ProcessingConfiguration
+            RoleARN: !GetAtt KinesisFirehoseIAMRole.Arn
+            # S3BackupConfiguration:
+            #   S3DestinationConfiguration
+            # S3BackupMode: String
+          - !Ref "AWS::NoValue"
+      # SplunkDestinationConfiguration:
+      #   SplunkDestinationConfiguration
+
+  FirehoseReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to read records from Kinesis Data Stream: ${KinesisFirehose}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${KinesisFirehose}-${AWS::Region}-read-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "ReadFromFirehose"
+            Effect: "Allow"
+            Action:
+              - "firehose:ListDeliveryStreams"
+              - "firehose:DescribeDeliveryStream"
+              - "firehose:Get*"
+            Resource:
+              - !GetAtt KinesisFirehose.Arn
+
+  FirehoseWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to write records to Kinesis Data Stream: ${KinesisFirehose}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${KinesisFirehose}-${AWS::Region}-write-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "WriteToFirehose"
+            Effect: "Allow"
+            Action:
+              - "firehose:ListDeliveryStreams"
+              - "firehose:DescribeDeliveryStream"
+              - "firehose:PutRecord"
+              - "firehose:PutRecordBatch"
+            Resource:
+              - !GetAtt KinesisFirehose.Arn
+
+  RedshiftIngressRule:
+    Condition: RedShiftDestination
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: "Allow access from Kinesis Data Firehose IP"
+      GroupId:
+        Fn::ImportValue: !Sub "${RedshiftStack}-RedShiftClusterSecurityGroupId"
+      IpProtocol: tcp
+      FromPort: 5439
+      ToPort: 5439
+      CidrIp:
+        Fn::FindInMap:
+          - RegionMap
+          - !Ref AWS::Region
+          - FirehoseIP
+
+Outputs:
+
+  KinesisFirehose:
+    Description: "Kenesis Firehose Stream"
+    Value: !Ref KinesisFirehose
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisFirehose"
+
+  KinesisFirehoseArn:
+    Description: "Kenesis Firehose Stream ARN"
+    Value: !GetAtt KinesisFirehose.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisFirehoseArn"
+
+  KinesisFirehosePublicIP:
+    Description: "Kenesis Firehose Public IP"
+    Value:
+      Fn::FindInMap:
+        - RegionMap
+        - !Ref AWS::Region
+        - FirehoseIP
+    Export:
+      Name: !Sub "${AWS::StackName}-KinesisFirehosePublicIP"
+
+  FirehoseReadPolicy:
+    Description: "Kenesis Firehose read policy"
+    Value: !Ref FirehoseReadPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-FirehoseReadPolicy"
+
+  FirehoseWritePolicy:
+    Description: "Kenesis Firehose write policy"
+    Value: !Ref FirehoseWritePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-FirehoseWritePolicy"

@@ -2,11 +2,14 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
               This CloudFormation template will create a KMS Key.
 Parameters:
+
   KMSAlias:
     Description: "Alias for KMS Key"
     Type: String
     Default: "Hash"
+
 Resources:
+
   KMSKey:
     Type: AWS::KMS::Key
     Properties:
@@ -15,18 +18,15 @@ Resources:
       EnableKeyRotation: True
       KeyUsage: "ENCRYPT_DECRYPT"
       PendingWindowInDays: 7
-      Tags:
-        - Key: "Key"
-          Value: "Value"
-      KeyPolicy: 
+      KeyPolicy:
         Version: "2012-10-17"
         Id: "Hash-Default-Key"
-        Statement: 
-          - 
+        Statement:
+          -
             Sid: "Allow administration of the key"
             Effect: "Allow"
             Principal: "*"
-            Action: 
+            Action:
               - "kms:Create*"
               - "kms:Describe*"
               - "kms:Enable*"
@@ -40,31 +40,77 @@ Resources:
               - "kms:ScheduleKeyDeletion"
               - "kms:CancelKeyDeletion"
             Resource: "*"
-          - 
+          -
             Sid: "Allow use of the key"
             Effect: "Allow"
             Principal: "*"
-            Action: 
+            Action:
               - "kms:Encrypt"
               - "kms:Decrypt"
               - "kms:ReEncrypt*"
               - "kms:GenerateDataKey*"
               - "kms:DescribeKey"
             Resource: "*"
+          -
+            Sid: "AlloWKeyUseByCloudWatchLog"
+            Effect: "Allow"
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - "kms:Encrypt*"
+              - "kms:Decrypt*"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey*"
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-${KMSAlias}"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
   KeyAlias:
     Type: AWS::KMS::Alias
     Properties:
       AliasName: !Join [ "/" , [ "alias" , !Ref KMSAlias ] ]
-      TargetKeyId: !Ref KMSKey 
+      TargetKeyId: !Ref KMSKey
+
+  KMSKeyUsePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy to use KMS Key: ${KMSAlias}"
+      # Groups:
+      #   - String
+      ManagedPolicyName: !Sub "${KMSAlias}-${AWS::Region}-policy"
+      Path: "/"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "kms:Decrypt"
+              - "kms:Encrypt"
+              - "kms:GenerateDataKey"
+            Resource:
+              - !GetAtt KMSKey.Arn
+      # Roles:
+      #   - String
+      # Users:
+      #   - String
 
 Outputs:
   KMSKeyARN:
     Description: "KMS Key ARN"
     Value: !GetAtt KMSKey.Arn
-    Export: 
+    Export:
       Name: !Sub "${AWS::StackName}-KMSKey"
   KMSKeyAliasARN:
     Description: "KMS Key Alias ARN"
     Value: !Ref KeyAlias
-    Export: 
+    Export:
       Name: !Sub "${AWS::StackName}-KeyAlias"
+  KMSKeyUsePolicy:
+    Description: "IAM Policy for usage of KMS Key"
+    Value: !Ref KMSKeyUsePolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-KMSKeyUsePolicy"

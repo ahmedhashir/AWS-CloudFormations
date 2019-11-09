@@ -2,43 +2,28 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
               This CloudFormation template will create a VPC with a public subnet and a private subnet.
               The private subnet will be associated with a NAT Gateway. Both Public & Private subnets will be
-              connected to S3Endpoint. A linux Bastion Host will be available in public subnet.
+              connected to S3Endpoint. A linux and/or Bastion Host will be available in public subnet.
+
 Mappings:
   AMIRegionMap:
-    ap-northeast-1:
-      BastionAMI: ami-25bd2743
-    ap-northeast-2:
-      BastionAMI: ami-7248e81c
-    ap-south-1:
-      BastionAMI: ami-5d99ce32
-    ap-southeast-1:
-      BastionAMI: ami-d2fa88ae
-    ap-southeast-2:
-      BastionAMI: ami-b6bb47d4
-    eu-west-1:
-      BastionAMI: ami-6e28b517
-    eu-west-2:
-      BastionAMI: ami-ee6a718a
-    eu-west-3:
-      BastionAMI: ami-bfff49c2
-    sa-east-1:
-      BastionAMI: ami-f9adef95
     us-east-1:
       BastionAMI: ami-4bf3d731
-      WindowsAMI: ami-0aeaed2faa756912c
+      WindowsAMI: ami-0b8d82dea356226d3
     us-east-2:
       BastionAMI: ami-e1496384
-      WindowsAMI: ami-0eb1e0a0c9f3f85c7
+      WindowsAMI: ami-01dfc26117e53f3e7
     us-west-1:
       BastionAMI: ami-65e0e305
-      WindowsAMI: ami-07afec9a0db8421d4
+      WindowsAMI: ami-0bf300225a13613b3
     us-west-2:
       BastionAMI: ami-a042f4d8
-      WindowsAMI: ami-02c9e7bab46cdc0f3
+      WindowsAMI: ami-01480a97ad9c3c6fb
     ca-central-1:
       BastionAMI: ami-dcad28b8
-      WindowsAMI: ami-03d55ac7b0bf2641a
+      WindowsAMI: ami-031f4c4f850851c90
+
 Metadata:
+
   AWS::CloudFormation::Interface:
     ParameterGroups:
       -
@@ -47,57 +32,94 @@ Metadata:
         Parameters:
           - VPCCidrBlock
       -
-        Label: 
-          default: Availability Zones
+        Label:
+          default: Public Subnet
         Parameters:
-          - PublicAvailbilityZone
-          - PublicCidrBlock
-          - PrivateAvailbilityZone
-          - PrivateCidrBlock
+          - PublicSubnet1CidrBlock
+          - PublicSubnet2CidrBlock
+      -
+        Label:
+          default: Private Subnet
+        Parameters:
+          - PrivateSubnet1CidrBlock
+          - PrivateSubnet2CidrBlock
       -
         Label:
           default: Bastion Host
         Parameters:
+          - BastionType
           - BastionKeyPair
           - BastionSourceIp
+      -
+        Label:
+          default: Encryption
+        Parameters:
+          - KMSStackName
     ParameterLabels:
       VPCCidrBlock:
         default: CIDR block
-      PublicAvailbilityZone:
-        default: Public Availability Zone
-      PrivateAvailbilityZone:
-        default: Private Availability Zone
       BastionKeyPair:
         default: Bastion Host Key Pair
-      BastionSourceIp:
-        default: "IP address authorized to access Bastion Hosts"
+
 Parameters:
+
   VPCCidrBlock:
     Description: CIDR range for VPC
     Type: String
-    Default: 10.0.0.0/16
-  PublicAvailbilityZone:
-    Description: "Availbility Zone for Public Subnet"
-    Type: AWS::EC2::AvailabilityZone::Name
-  PublicCidrBlock:
-    Description: CIDR block for public Subnet
+    Default: "10.0.0.0/16"
+
+  PublicSubnet1CidrBlock:
+    Description: CIDR block for public Subnet 1
     Type: String
-    Default: 10.0.1.0/24
-  PrivateAvailbilityZone:
-    Description: "Availbility Zone for Private Subnet"
-    Type: AWS::EC2::AvailabilityZone::Name
-  PrivateCidrBlock:
-    Description: CIDR block for private Subnet
+    Default: "10.0.1.0/24"
+
+  PublicSubnet2CidrBlock:
+    Description: CIDR block for public Subnet 2
     Type: String
-    Default: 10.0.2.0/24
+    Default: "10.0.2.0/24"
+
+  PrivateSubnet1CidrBlock:
+    Description: CIDR block for private Subnet 1
+    Type: String
+    Default: "10.0.3.0/24"
+
+  PrivateSubnet2CidrBlock:
+    Description: CIDR block for private Subnet 2
+    Type: String
+    Default: "10.0.4.0/24"
+
   BastionKeyPair:
     Description: "Key Pair for Bastion Host"
     Type: AWS::EC2::KeyPair::KeyName
+
   BastionSourceIp:
-    Description: "www.whatismyip.com"
+    Description: "checkip.amazonaws.com"
     Type: String
     Default: "0.0.0.0/0"
+
+  BastionType:
+    Description: "Type of Bastion Host"
+    Type: String
+    Default: "Both"
+    AllowedValues:
+      - "Linux"
+      - "Windows"
+      - "Both"
+      - "None"
+
+  KMSStackName:
+    Description: Name of KMS Stack that created a KMS Key
+    Type: String
+    Default: HashKMSStack
+
+Conditions:
+
+  KMSStackNameSpecified: !Not [ !Equals [ "" , !Ref KMSStackName ] ]
+  LinuxBastion: !Or [ !Equals [ "Linux" , !Ref BastionType ], !Equals [ "Both" , !Ref BastionType ] ]
+  WindowsBastion: !Or [ !Equals [ "Windows" , !Ref BastionType ], !Equals [ "Both" , !Ref BastionType ] ]
+
 Resources:
+
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -108,37 +130,84 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-VPC"
-  PublicSubnet:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Ref PublicAvailbilityZone 
-      CidrBlock: !Ref PublicCidrBlock
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref "AWS::Region"
+      CidrBlock: !Ref PublicSubnet1CidrBlock
       MapPublicIpOnLaunch: true
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-PublicSubnet"
-  PrivateSubnet:
+          Value: !Sub "${AWS::StackName}-PublicSubnet1"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PublicSubnet2:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Ref PrivateAvailbilityZone 
-      CidrBlock: !Ref PrivateCidrBlock
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref "AWS::Region"
+      CidrBlock: !Ref PublicSubnet2CidrBlock
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicSubnet2"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref "AWS::Region"
+      CidrBlock: !Ref PrivateSubnet1CidrBlock
       MapPublicIpOnLaunch: false
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-PrivateSubnet"
+          Value: !Sub "${AWS::StackName}-PrivateSubnet1"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref "AWS::Region"
+      CidrBlock: !Ref PrivateSubnet2CidrBlock
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PrivateSubnet2"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
           - Key: Name
             Value: !Sub "${AWS::StackName}-InternetGateway"
+          - Key: Owner
+            Value: "hashir.ahmed@slalom.com"
+
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
+
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -146,23 +215,53 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-PublicRouteTable"
-  PrivateRouteTable:
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnet1RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-PrivateRouteTable"
-  PublicRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation 
+          Value: !Sub "${AWS::StackName}-PrivateSubnet1RouteTable"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnet2RouteTable:
+    Type: AWS::EC2::RouteTable
     Properties:
-      SubnetId: !Ref PublicSubnet
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PrivateSubnet2RouteTable"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
-  PrivateRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation 
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PrivateSubnet
-      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateSubnet1RouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateSubnet2RouteTable
+
   PublicRouteToInternet:
     Type: AWS::EC2::Route
     DependsOn: InternetGatewayAttachment
@@ -170,37 +269,68 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-  PublicIP:
+
+  Subnet1PublicIP:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
-  NATGateway:
+
+  Subnet2PublicIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  PublicSubnet1NATGateway:
     Type: AWS::EC2::NatGateway
     DependsOn: PublicRouteToInternet
     Properties:
-      AllocationId: !GetAtt PublicIP.AllocationId
-      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt Subnet1PublicIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-NatGateway"
-  RouteToNATGateway:
+          Value: !Sub "${AWS::StackName}-PublicSubnet1NATGateway"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnet1RouteToNATGateway:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateSubnet1RouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NATGateway
+      NatGatewayId: !Ref PublicSubnet1NATGateway
+
+  PublicSubnet2NATGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: PublicRouteToInternet
+    Properties:
+      AllocationId: !GetAtt Subnet2PublicIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicSubnet2NATGateway"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  PrivateSubnetsRouteToNATGateway:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateSubnet2RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref PublicSubnet2NATGateway
+
   S3EndPoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
       RouteTableIds:
         - !Ref PublicRouteTable
-        - !Ref PrivateRouteTable
+        - !Ref PrivateSubnet1RouteTable
+        - !Ref PrivateSubnet2RouteTable
       ServiceName:
         !Join [ "", [ "com.amazonaws.", !Ref "AWS::Region", ".s3" ] ]
       VpcId: !Ref VPC
+
   BastionSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    Description: "Security Group for Bastion Host only!"
     Properties:
       GroupName: !Sub "${AWS::StackName}-BastionSecurityGroup"
       GroupDescription: Enable SSH access via port 22
@@ -210,95 +340,201 @@ Resources:
           Value: !Sub "${AWS::StackName}-BastionSecurityGroup"
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: '22'
-          ToPort: '22'
+          FromPort: 22
+          ToPort: 22
           CidrIp: !Ref BastionSourceIp
         - IpProtocol: tcp
-          FromPort: '3389'
-          ToPort: '3389'
+          FromPort: 3389
+          ToPort: 3389
           CidrIp: !Ref BastionSourceIp
+
+  BastionIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "BastionIAMRole-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: ["ec2.amazonaws.com"]
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "S3PermissionForSSMAgent"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "s3:GetObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::aws-ssm-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::aws-windows-downloads-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::amazon-ssm-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::amazon-ssm-packages-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::${AWS::Region}-birdwatcher-prod/*"
+                  - !Sub "arn:aws:s3:::patch-baseline-snapshot-${AWS::Region}/*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-BastionIAMRole"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
+  BastionIAMRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref BastionIAMRole
+      InstanceProfileName: !Ref BastionIAMRole
+
   LinuxBastionHost:
+    Condition: LinuxBastion
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t2.micro
-      ImageId: 
+      InstanceType: t2.medium
+      ImageId:
         Fn::FindInMap:
         - AMIRegionMap
         - !Ref AWS::Region
         - BastionAMI
-      SubnetId: !Ref PublicSubnet
-      SecurityGroupIds: 
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
         - !GetAtt BastionSecurityGroup.GroupId
+        - !GetAtt VPC.DefaultSecurityGroup
       KeyName: !Ref BastionKeyPair
-      BlockDeviceMappings: 
-           - DeviceName: "/dev/sda1"
-             Ebs: 
-               VolumeSize: "8"
-               VolumeType: "gp2"
-               DeleteOnTermination: true
+      IamInstanceProfile: !Ref BastionIAMRoleInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeSize: 8
+            VolumeType: "gp2"
+            Encrypted: True
+            KmsKeyId:
+              !If
+                - KMSStackNameSpecified
+                -
+                  Fn::ImportValue: !Sub "${KMSStackName}-KeyAlias"
+                - !Ref "AWS::NoValue"
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash -xe
+            # Install the SSM agent.
+            cd /tmp
+            curl https://amazon-ssm-${AWS::Region}.s3.amazonaws.com/latest/linux_amd64/amazon-ssm-agent.rpm -o amazon-ssm-agent.rpm
+            sudo yum install -y amazon-ssm-agent.rpm
+            pip3 install --upgrade --user awscli
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-LinuxBastionHost"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
   WindowsBastionHost:
+    Condition: WindowsBastion
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t2.large
+      InstanceType: t2.medium
       ImageId:
         Fn::FindInMap:
         - AMIRegionMap
         - !Ref AWS::Region
         - WindowsAMI
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PublicSubnet1
       SecurityGroupIds:
         - !GetAtt BastionSecurityGroup.GroupId
+        - !GetAtt VPC.DefaultSecurityGroup
       KeyName: !Ref BastionKeyPair
+      IamInstanceProfile: !Ref BastionIAMRoleInstanceProfile
       BlockDeviceMappings:
-           - DeviceName: "/dev/sda1"
-             Ebs:
-               VolumeSize: "30"
-               VolumeType: "gp2"
-               DeleteOnTermination: true
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeSize: 30
+            VolumeType: "gp2"
+            Encrypted: True
+            KmsKeyId:
+              !If
+                - KMSStackNameSpecified
+                -
+                  Fn::ImportValue: !Sub "${KMSStackName}-KeyAlias"
+                - !Ref "AWS::NoValue"
+            DeleteOnTermination: true
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-WindowsBastionHost"
+        - Key: Owner
+          Value: "hashir.ahmed@slalom.com"
+
 Outputs:
   VPCId:
     Description: "VPC Id"
     Value: !Ref VPC
-    Export: 
-      Name: !Sub "${AWS::StackName}-VPCID"
-  PublicSubnetId:
-    Description: "Public Subnet Id"
-    Value: !Ref PublicSubnet
     Export:
-      Name: !Sub "${AWS::StackName}-PublicSubnetId"
+      Name: !Sub "${AWS::StackName}-VPCID"
+  PublicSubnet1Id:
+    Description: "Public Subnet 1 Id"
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet1Id"
+  PublicSubnet2Id:
+    Description: "Public Subnet 2 Id"
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet2Id"
   PublicRouteTableId:
     Description: "Public Route Table Id"
     Value: !Ref PublicRouteTable
     Export:
       Name: !Sub "${AWS::StackName}-PublicRouteTableId"
-  PrivateSubnetId:
-    Description: "Private Subnet Id"
-    Value: !Ref PrivateSubnet
+  PrivateSubnet1Id:
+    Description: "Private Subnet 1 Id"
+    Value: !Ref PrivateSubnet1
     Export:
-      Name: !Sub "${AWS::StackName}-PrivateSubnetId"
-  PrivateRouteTableId:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1Id"
+  PrivateSubnet2Id:
+    Description: "Private Subnet 2 Id"
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2Id"
+  PrivateSubnet1RouteTableId:
     Description: "Private Route Table Id"
-    Value: !Ref PrivateRouteTable
+    Value: !Ref PrivateSubnet1RouteTable
     Export:
-      Name: !Sub "${AWS::StackName}-PrivateRouteTableId"
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1RouteTableId"
+  PrivateSubnet2RouteTableId:
+    Description: "Private Route Table Id"
+    Value: !Ref PrivateSubnet2RouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2RouteTableId"
   BastionSecurityGroup:
     Description: "Security Group associated with Bastion Host"
     Value: !Ref BastionSecurityGroup
     Export:
       Name: !Sub "${AWS::StackName}-BastionSecurityGroup"
   LinuxBastionHost:
+    Condition: LinuxBastion
     Description: "Bastion Host Public IP"
     Value: !GetAtt LinuxBastionHost.PublicDnsName
     Export:
       Name: !Sub "${AWS::StackName}-LinuxBastionHostIp"
   WindowsBastionHost:
+    Condition: WindowsBastion
     Description: "Windows Bastion Host Public IP"
     Value: !GetAtt WindowsBastionHost.PublicDnsName
     Export:
       Name: !Sub "${AWS::StackName}-WindowsBastionHostIp"
+  BastionSourceIP:
+    Description: "Bastion Source IP"
+    Value: !Ref BastionSourceIp
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionSourceIp"
+  VPCDefaultSecurityGroup:
+    Description: "VPC DefaultSecurityGroup"
+    Value: !GetAtt VPC.DefaultSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-DefaultSecurityGroup"

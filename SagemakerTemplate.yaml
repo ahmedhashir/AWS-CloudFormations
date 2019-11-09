@@ -19,6 +19,7 @@ Metadata:
       NetworkStackName:
         default: "Name of network stack"
 Parameters:
+
   NetworkStackName:
     Description: Name of Network Stack that will contain a Private Subnet
     Type: String
@@ -26,15 +27,24 @@ Parameters:
     MaxLength: 255
     AllowedPattern: "^[a-zA-Z][-a-zA-Z0-9]*$"
     Default: HashNetworkStack
+
   NotebookInstanceName:
     Description: Name of Sagemaker notebook
     Type: String
     Default: HashSagemakerNotebook
+
   InstanceType:
     Description: "Instance Type of Machine Learning Notebook"
     Type: String
     Default: "ml.t2.large"
+
+  GlueDevelopmentEndpoint:
+    Description: "Glue Development Endpoint"
+    Type: String
+    Default: "HashGlueDevelopmentEndpoint"
+
 Resources:
+
   SagemakerInterfaceEndPoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -48,6 +58,7 @@ Resources:
       VpcId:
         Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
       PrivateDnsEnabled: True
+
   SagemakerAPIEndPoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -61,6 +72,7 @@ Resources:
       VpcId:
         Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
       PrivateDnsEnabled: True
+
   SagemakerRuntimeEndPoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -74,20 +86,21 @@ Resources:
       VpcId:
         Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
       PrivateDnsEnabled: True
+
   NotebookSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Description: "Security Group for Sagemaker notebooks"
     Properties:
       GroupName: !Sub "${AWS::StackName}-NotebookSecurityGroup"
       GroupDescription: "Security Group for Sagemaker Notebook"
-      VpcId: 
+      VpcId:
         Fn::ImportValue: !Sub "${NetworkStackName}-VPCID"
       SecurityGroupIngress:
         -
           IpProtocol: tcp
           FromPort: '443'
           ToPort: '443'
-          SourceSecurityGroupId: 
+          SourceSecurityGroupId:
             Fn::ImportValue: !Sub "${NetworkStackName}-BastionSecurityGroup"
       SecurityGroupEgress:
         -
@@ -98,6 +111,7 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-SagemakerNotebookSecurityGroup"
+
   NotebookSecurityGroupIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -106,36 +120,87 @@ Resources:
       FromPort: '0'
       ToPort: '65535'
       SourceSecurityGroupId: !Ref NotebookSecurityGroup
+
+  # NotebookInstanceLifecycleConfig:
+  # Type: AWS::SageMaker::NotebookInstanceLifecycleConfig
+  # Properties:
+  #   NotebookInstanceLifecycleConfigName: HashLifecycleConfig
+  #   OnCreate:
+  #     -
+  #       Content:
+  #         Fn::Base64:
+  #           "#!/bin/bash
+
+  #           set -ex
+  #           [ -e /home/ec2-user/glue_ready ] && exit 0
+
+  #           mkdir /home/ec2-user/glue
+  #           cd /home/ec2-user/glu
+  #           ASSETS=s3://aws-glue-jes-prod-ca-central-1-assets/sagemaker/assets/
+  #           DEV_ENDPOINT_NAME=test-vpc
+  #           aws s3 cp ${ASSETS} . --recursive
+
+  #           bash "/home/ec2-user/glue/Miniconda2-4.5.12-Linux-x86_64.sh" -b -u -p "/home/ec2-user/glue/miniconda"
+  #           source "/home/ec2-user/glue/miniconda/bin/activate"
+
+  #           tar -xf autossh-1.4e.tgz
+  #           cd autossh-1.4e
+  #           ./configure
+  #           make
+  #           sudo make install
+  #           pip install pandas==0.22.0
+
+  #           mkdir -p /home/ec2-user/.sparkmagic
+  #           cp /home/ec2-user/glue/config.json /home/ec2-user/.sparkmagic/config.json
+
+  #           mkdir -p /home/ec2-user/SageMaker/Glue\ Examples
+  #           mv /home/ec2-user/glue/notebook-samples/* /home/ec2-user/SageMaker/Glue\ Examples/
+
+  #           sudo cp /home/ec2-user/glue/autossh.conf /etc/init/",
+  #           "python3 /home/ec2-user/glue/bootstrap.py --devendpointname", { "Ref" : "GlueDevelopmentEndpoint" }, "--endpoint https://glue.ca-central-1.amazonaws.com --notebookname aws-glue-hash-notebook
+
+  #           source "/home/ec2-user/glue/miniconda/bin/deactivate"
+  #           rm -rf "/home/ec2-user/glue/Miniconda2-4.5.12-Linux-x86_64.sh"
+
+  #           sudo touch /home/ec2-user/glue_ready"
+  #               ]
+  #             ]
+  #           }
+    # OnStart:
+    #   - NotebookInstanceLifecycleHook
+
   NotebookInstance:
     Type: AWS::SageMaker::NotebookInstance
     Properties:
       NotebookInstanceName: !Ref NotebookInstanceName
       InstanceType: !Ref InstanceType
-      SecurityGroupIds: 
+      SecurityGroupIds:
         - !GetAtt NotebookSecurityGroup.GroupId
       RoleArn: !GetAtt SagemakerExecutionRole.Arn
-      SubnetId: 
+      SubnetId:
         Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnetId"
       DirectInternetAccess: "Disabled"
       Tags:
         - Key: Name
           Value: !Ref NotebookInstanceName
+
   SagemakerExecutionRole:
     Type: AWS::IAM::Role
-    Properties: 
-      AssumeRolePolicyDocument: 
+    Properties:
+      AssumeRolePolicyDocument:
         Version: "2012-10-17"
-        Statement: 
-          - 
+        Statement:
+          -
             Effect: "Allow"
-            Principal: 
-              Service: 
+            Principal:
+              Service:
                 - "sagemaker.amazonaws.com"
-            Action: 
+            Action:
               - "sts:AssumeRole"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
       RoleName: !Join [ "-", [ "Sagemaker", !Ref "AWS::Region", "SagemakerExecutionRole" ] ]
+
   SagemakerExecutionRoleInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
